@@ -32,7 +32,7 @@ data class UiState(
 )
 
 class LauncherRenderer {
-    const val ICON_COUNT = 6
+    companion object { const val ICON_COUNT = 6 }
 
     private val BG = Color.rgb(11, 16, 24)
     private val CARD = Color.rgb(21, 29, 43)
