@@ -1291,9 +1291,11 @@ class MainActivity : Activity() {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             // With inJustDecodeBounds=true, decodeStream returns null by design.
             // Read dimensions from Options instead of treating null as an error.
-            contentResolver.openInputStream(uri)?.use {
+            val boundsStream = contentResolver.openInputStream(uri)
+                ?: error("Không mở được tệp ảnh")
+            boundsStream.use {
                 BitmapFactory.decodeStream(it, null, bounds)
-            } ?: error("Không mở được tệp ảnh")
+            }
             require(bounds.outWidth > 0 && bounds.outHeight > 0) {
                 "Định dạng ảnh không hợp lệ hoặc ảnh bị lỗi."
             }
