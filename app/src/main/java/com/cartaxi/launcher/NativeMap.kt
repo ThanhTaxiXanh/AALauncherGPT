@@ -97,6 +97,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private val signsSrc = "ct-signs"
     private val reportsSrc = "ct-personal-reports"
     private val reportStore = TrafficReportStore(File(appCtx.filesDir, "traffic_reports_v1.json"))
+    private val settingsStore = DashboardSettingsRepository(appCtx)
     private val reportWorker = Executors.newSingleThreadExecutor()
     private var reportSnapshot: List<TrafficReport> = emptyList()
     private var reportLayerEnabled = false
@@ -682,7 +683,14 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val lat = if (hasFix) tLat else 21.0285
         val lon = if (hasFix) tLon else 105.8542
         val el = sunElevation(lat, lon, nowMs)
-        val wantNight = if (!dnInit) el < -2.0 else if (night) el < 1.0 else el < -3.0
+        val theme = runCatching { settingsStore.read().mapTheme }
+            .getOrDefault(MapThemeMode.AUTO)
+        val wantNight = when (theme) {
+            MapThemeMode.DARK -> true
+            MapThemeMode.LIGHT -> false
+            MapThemeMode.AUTO -> if (!dnInit) el < -2.0
+                else if (night) el < 1.0 else el < -3.0
+        }
         dnInit = true
         if (wantNight != night) {
             night = wantNight
@@ -763,9 +771,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         lastReportFetchMs = elapsed
         reportsLoading = true
         reportWorker.execute {
-            val enabled = appCtx.getSharedPreferences(
-                "traffic_report_privacy", Context.MODE_PRIVATE
-            ).getBoolean("show_map", false)
+            val enabled = runCatching {
+                settingsStore.read().showPersonalReportsOnMap
+            }.getOrDefault(false)
             val records = if (enabled) try {
                 reportStore.list()
             } catch (e: Exception) {

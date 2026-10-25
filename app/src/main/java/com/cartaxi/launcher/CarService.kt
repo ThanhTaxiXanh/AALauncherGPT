@@ -55,11 +55,19 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private var evLines: List<EventLine> = emptyList()
     private val handler = Handler(Looper.getMainLooper())
     private val prefs = appCtx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+    private val configStore = DashboardSettingsRepository(appCtx)
+    private var currentSettings = DashboardSettings()
     private val qrFile = File(appCtx.filesDir, "qr.png")
     private val maps = NativeMap(appCtx, handler)
 
     private val ticker = object : Runnable {
         override fun run() {
+            currentSettings = try {
+                configStore.read()
+            } catch (e: Exception) {
+                logErr("CarService:dashboardSettings", e)
+                DashboardSettings()
+            }
             draw()
             ensureMaps()
             maps.update(System.currentTimeMillis())
@@ -219,7 +227,8 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 mapFrameH = maps.frameH,
                 mapsStatus = maps.status,
                 streetName = maps.streetName,
-                signs = maps.signsState
+                signs = maps.signsState,
+                settings = currentSettings
             )
             LauncherRenderer.render(canvas, width, height, st)
         } finally {

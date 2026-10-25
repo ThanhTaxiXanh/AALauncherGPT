@@ -27,7 +27,8 @@ data class UiState(
     val mapFrameH: Int,
     val mapsStatus: String,
     val streetName: String,
-    val signs: SignsState = SignsState.EMPTY
+    val signs: SignsState = SignsState.EMPTY,
+    val settings: DashboardSettings = DashboardSettings()
 )
 
 object LauncherRenderer {
@@ -168,10 +169,20 @@ object LauncherRenderer {
         lastMain = main
 
         drawMain(c, main, st)
-        drawCalendar(c, cal, st)
-        drawQr(c, qr, st.qrFile)
-        drawSigns(c, signs, st)
+        if (st.settings.showCalendar) drawCalendar(c, cal, st)
+        else drawDisabledPanel(c, cal, "Lịch đã ẩn")
+        if (st.settings.showQr) drawQr(c, qr, st.qrFile)
+        else drawDisabledPanel(c, qr, "QR đã ẩn")
+        if (st.settings.showSigns) drawSigns(c, signs, st)
+        else drawDisabledPanel(c, signs, "Biển báo đã ẩn")
         drawIcons(c, icons, st.selectedIcon)
+    }
+
+    /** Placeholder keeps fixed Phase 5 hit regions; Phase 6 will own layout changes. */
+    private fun drawDisabledPanel(c: Canvas, rect: RectF, label: String) {
+        card(c, rect, 18f)
+        textMid(c, label, rect.centerX(), rect.centerY(), 15f, MUTED,
+            false, rect.width() * 0.8f)
     }
 
     private fun text(
@@ -241,7 +252,7 @@ object LauncherRenderer {
             textMid(c, st.mapsStatus, m.centerX(), m.centerY() + 34f * k, maxOf(12f, 16f * k), ACCENT, false, m.width() * 0.85f)
         }
 
-        drawStreet(c, m, k, st.streetName)
+        if (st.settings.showStreetName) drawStreet(c, m, k, st.streetName)
         drawBubbles(c, m, k, st)
 
         c.restore()

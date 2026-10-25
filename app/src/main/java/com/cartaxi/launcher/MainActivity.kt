@@ -33,8 +33,8 @@ class MainActivity : Activity() {
     private val reqLocation = 1
     private val reqReportExport = 3
     private var exportWithGps = false
-    private val reportPrivacy by lazy {
-        getSharedPreferences("traffic_report_privacy", MODE_PRIVATE)
+    private val settingsRepository by lazy {
+        DashboardSettingsRepository(this)
     }
     private var pad = 0
     private lateinit var preview: ImageView
@@ -100,6 +100,7 @@ class MainActivity : Activity() {
         root.addView(preview)
         root.addView(pick)
         root.addView(perm)
+        addDashboardSettings(root)
         root.addView(evTitle)
         root.addView(eventBox)
         root.addView(addEv)
@@ -116,13 +117,6 @@ class MainActivity : Activity() {
         root.addView(reportsTitle)
         root.addView(reportBox)
         root.addView(addReport)
-        val showOnMap = CheckBox(this).apply {
-            text = "Hiển thị báo cáo của tôi trên bản đồ (chưa xác minh)"
-            isChecked = reportPrivacy.getBoolean("show_map", false)
-            setOnCheckedChangeListener { _, checked ->
-                reportPrivacy.edit().putBoolean("show_map", checked).apply()
-            }
-        }
         val exportReports = Button(this).apply {
             text = "Xuất báo cáo JSON"
             setOnClickListener { showExportDialog() }
@@ -131,7 +125,6 @@ class MainActivity : Activity() {
             text = "Xóa toàn bộ GPS khỏi báo cáo"
             setOnClickListener { confirmEraseGps() }
         }
-        root.addView(showOnMap)
         root.addView(exportReports)
         root.addView(eraseGps)
         val scroll = ScrollView(this)
@@ -141,6 +134,129 @@ class MainActivity : Activity() {
         refreshPreview()
         refreshEvents()
         refreshReports()
+    }
+
+    // ---------- Phase 5: centralized phone configuration ----------
+    private fun addDashboardSettings(root: LinearLayout) {
+        val title = TextView(this).apply {
+            text = "Trung tâm cấu hình Dashboard"
+            textSize = 20f
+            setPadding(0, pad, 0, 0)
+        }
+        root.addView(title)
+        root.addView(TextView(this).apply {
+            text = "Áp dụng cho màn hình Android Auto khi ứng dụng cập nhật. " +
+                "Bố cục và kích thước các ô sẽ được tùy chỉnh ở Phase 6."
+            textSize = 13f
+        })
+        val current = try {
+            settingsRepository.read()
+        } catch (e: Exception) {
+            root.addView(TextView(this).apply {
+                text = "Cài đặt có lỗi hoặc thuộc phiên bản mới hơn. " +
+                    "Dữ liệu đang được giữ nguyên; chỉ khôi phục khi bạn đồng ý."
+            })
+            addSettingsResetButton(root)
+            return
+        }
+        fun toggle(
+            title: String, selected: Boolean,
+            update: (DashboardSettings, Boolean) -> DashboardSettings
+        ) {
+            val box = CheckBox(this).apply {
+                text = title
+                isChecked = selected
+            }
+            var restoring = false
+            box.setOnCheckedChangeListener { _, checked ->
+                if (restoring) return@setOnCheckedChangeListener
+                try {
+                    // Merge against the latest snapshot rather than overwriting
+                    // a different setting modified since this screen opened.
+                    settingsRepository.change { latest -> update(latest, checked) }
+                } catch (e: Exception) {
+                    logErr("MainActivity:settingsToggle", e)
+                    restoring = true
+                    box.isChecked = !checked
+                    restoring = false
+                    Toast.makeText(this@MainActivity,
+                        "Không lưu được cài đặt.", Toast.LENGTH_LONG).show()
+                }
+            }
+            root.addView(box)
+        }
+        toggle("Hiện ô Lịch / Sự kiện", current.showCalendar) { value, checked ->
+            value.copy(showCalendar = checked)
+        }
+        toggle("Hiện ô mã QR", current.showQr) { value, checked ->
+            value.copy(showQr = checked)
+        }
+        toggle("Hiện ô Biển báo / tốc độ", current.showSigns) { value, checked ->
+            value.copy(showSigns = checked)
+        }
+        toggle("Hiện tên đường trên bản đồ", current.showStreetName) { value, checked ->
+            value.copy(showStreetName = checked)
+        }
+        toggle("Hiển thị báo cáo cá nhân trên bản đồ (chưa xác minh)",
+            current.showPersonalReportsOnMap) { value, checked ->
+            value.copy(showPersonalReportsOnMap = checked)
+        }
+        root.addView(TextView(this).apply {
+            text = "Chế độ sáng / tối của bản đồ"
+            textSize = 15f
+        })
+        val modes = MapThemeMode.entries
+        val modeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                modes.map { it.title }
+            )
+            setSelection(modes.indexOf(current.mapTheme))
+        }
+        root.addView(modeSpinner)
+        val saveTheme = Button(this).apply {
+            text = "Lưu chế độ bản đồ"
+            setOnClickListener {
+                try {
+                    settingsRepository.change {
+                        it.copy(mapTheme = modes[modeSpinner.selectedItemPosition])
+                    }
+                    Toast.makeText(this@MainActivity,
+                        "Đã cập nhật chế độ bản đồ.", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    logErr("MainActivity:settingsTheme", e)
+                    Toast.makeText(this@MainActivity,
+                        "Không lưu được chế độ bản đồ.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        root.addView(saveTheme)
+        addSettingsResetButton(root)
+    }
+
+    private fun addSettingsResetButton(root: LinearLayout) {
+        root.addView(Button(this).apply {
+            text = "Khôi phục cấu hình Dashboard mặc định"
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Khôi phục cài đặt mặc định?")
+                    .setMessage("Chỉ đặt lại lựa chọn hiển thị Dashboard. " +
+                        "Lịch, mã QR, báo cáo và tọa độ trong báo cáo vẫn được giữ nguyên. " +
+                        "Báo cáo cá nhân trên bản đồ sẽ được ẩn.")
+                    .setNegativeButton("Hủy", null)
+                    .setPositiveButton("Khôi phục") { _, _ ->
+                        try {
+                            settingsRepository.reset()
+                            recreate()
+                        } catch (e: Exception) {
+                            logErr("MainActivity:settingsReset", e)
+                            Toast.makeText(this@MainActivity,
+                                "Không thể khôi phục cài đặt.", Toast.LENGTH_LONG).show()
+                        }
+                    }.show()
+            }
+        })
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
