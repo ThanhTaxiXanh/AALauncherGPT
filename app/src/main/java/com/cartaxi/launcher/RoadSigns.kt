@@ -87,8 +87,13 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     @Volatile private var error = ""
     @Volatile private var lastHttpStatus = ""
     private var lastTry = -100000L
-    private val diskCache = OfflineSignCache(cacheFile)
+    private val diskCache = MultiRegionSignCache(cacheFile)
+    private val requestGate = OverpassRequestGate()
     private val exec = Executors.newSingleThreadExecutor()
+    @Volatile private var offlineRegions: List<OfflineRegionSigns> = emptyList()
+    private var hintsLoading = false
+    private var hintCenterLat = Double.NaN
+    private var hintCenterLon = Double.NaN
 
     private val speedWayMatcher = SpeedWayMatcher()
     private var lastWayId: Long? = null
@@ -101,21 +106,22 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     private var pendEst = false
     private var pendN = 0
 
-    init {
-        exec.execute { loadCache() }
-    }
+    // Disk data is loaded asynchronously only near the current GPS position;
+    // startup does not parse every region into memory.
 
     // ---------- tải dữ liệu ----------
 
     fun request(lat: Double, lon: Double) {
-        if (fetching) return
+        if (!lat.isFinite() || !lon.isFinite() ||
+            lat !in -90.0..90.0 || lon !in -180.0..180.0) return
+        loadNearbyHints(lat, lon)
         val now = SystemClock.elapsedRealtime()
-        val d = data
-        if (d != null && !d.stale && dist(lat, lon, d.lat, d.lon) < REFETCH_M && now - d.timeMs < MAX_AGE_MS) return
-        if (now - lastTry < RETRY_MS) return
-        lastTry = now
+        // Only freshly downloaded data is allowed to serve live speed limits.
+        // Query coalescing and retries are independent of the offline archive.
+        if (!requestGate.begin(lat, lon, now)) return
         fetching = true
         exec.execute {
+            var success = false
             try {
                 val txt = download(lat, lon)
                 val savedAtMs = System.currentTimeMillis()
@@ -123,32 +129,98 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 data = parsed
                 error = ""
                 lastHttpStatus = ""
+                success = true
                 try {
                     diskCache.write(lat, lon, txt, savedAtMs)
                 } catch (e: Exception) {
-                    logErr("RoadSigns:113", e)
+                    logErr("RoadSigns:cacheWrite", e)
                 }
             } catch (e: Exception) {
                 error = "Lỗi dữ liệu biển báo (kết nối/Overpass)"
                 logErr("RoadSigns:network", e)
             } finally {
+                requestGate.complete(success, SystemClock.elapsedRealtime())
                 fetching = false
             }
         }
     }
 
-    private fun loadCache() {
-        try {
-            val snapshot = diskCache.read() ?: return
-            // Disk data is never promoted to active speed limits or live warnings,
-            // even if the saved timestamp is recent.
-            val stored = parse(
-                snapshot.payload, snapshot.lat, snapshot.lon, 0L, true, snapshot.savedAtEpochMs
-            )
-            if (data == null) data = stored
-        } catch (e: Exception) {
-            logErr("RoadSigns:133", e)
+    private data class OfflineRegionSigns(
+        val centerLat: Double,
+        val centerLon: Double,
+        val savedAtEpochMs: Long,
+        val signs: List<SignItem>
+    )
+
+    /**
+     * Called on the map/UI thread: only schedules work. Slow disk access and
+     * parsing never block GPS, the ImageReader, or the map rendering loop.
+     */
+    private fun loadNearbyHints(lat: Double, lon: Double) {
+        if (hintsLoading) return
+        if (hintCenterLat.isFinite() && dist(lat, lon, hintCenterLat, hintCenterLon) < 250.0) return
+        hintsLoading = true
+        hintCenterLat = lat
+        hintCenterLon = lon
+        exec.execute {
+            try {
+                val snapshots = diskCache.readNearby(lat, lon, MAX_DATA_DISTANCE_M, 4)
+                offlineRegions = snapshots.mapNotNull { snapshot ->
+                    try {
+                        val signs = parseHintSigns(snapshot.payload).map { item ->
+                            item.copy(
+                                type = "offline_hint", label = "?", value = 0,
+                                name = "OSM lưu offline (chưa xác minh): " + item.name
+                            )
+                        }
+                        OfflineRegionSigns(
+                            snapshot.lat, snapshot.lon, snapshot.savedAtEpochMs, signs
+                        )
+                    } catch (e: Exception) {
+                        logErr("RoadSigns:regionParse", e)
+                        null
+                    }
+                }
+            } catch (e: Exception) {
+                logErr("RoadSigns:regionCache", e)
+                offlineRegions = emptyList()
+            } finally {
+                hintsLoading = false
+            }
         }
+    }
+
+    private fun parseHintSigns(raw: String): List<SignItem> {
+        val elements = JSONObject(raw).getJSONArray("elements")
+        val signs = ArrayList<SignItem>()
+        for (i in 0 until elements.length()) {
+            val e = elements.getJSONObject(i)
+            if (e.optString("type") != "node" ||
+                !e.has("lat") || !e.has("lon")) continue
+            val t = e.optJSONObject("tags") ?: continue
+            classify(t, e.getDouble("lat"), e.getDouble("lon"))?.let { item ->
+                signs.add(item.copy(facing = parseFacing(t.str("direction"))))
+            }
+        }
+        return signs
+    }
+
+    /** Expired and far-away archived regions are discarded at *display* time. */
+    private fun nearbyArchived(lat: Double, lon: Double): List<SignItem> {
+        val now = System.currentTimeMillis()
+        return offlineRegions.asSequence()
+            .filter { region ->
+                SignCachePolicy.classify(
+                    fromDisk = true,
+                    ageElapsedMs = 0L,
+                    savedAtEpochMs = region.savedAtEpochMs,
+                    nowEpochMs = now,
+                    distanceM = dist(lat, lon, region.centerLat, region.centerLon),
+                    maxDistanceM = MAX_DATA_DISTANCE_M
+                ) == SignCacheUse.OFFLINE_HINT
+            }
+            .flatMap { it.signs.asSequence() }
+            .toList()
     }
 
     private fun query(lat: Double, lon: Double): String {
@@ -365,40 +437,29 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     private fun angDiff(a: Double, b: Double): Double = abs(((a - b + 540.0) % 360.0) - 180.0)
 
     /**
-     * Fresh Overpass signs are shown as originally tagged. Offline or timed-out
-     * OSM signs are visible only as grey '?' hints, never as speed-limit discs.
-     * Verified supplemental GeoJSON remains distinguishable and available offline.
+     * Verified supplements win; fresh OSM data is shown normally; archived
+     * OSM from multiple regions is a grey '?' hint only. No disk I/O here.
      */
     fun nearby(lat: Double, lon: Double, radius: Double, max: Int): List<SignItem> {
-        if (lat !in -90.0..90.0 || lon !in -180.0..180.0 || radius <= 0.0 || max <= 0) return emptyList()
+        if (!lat.isFinite() || !lon.isFinite() ||
+            lat !in -90.0..90.0 || lon !in -180.0..180.0 ||
+            radius <= 0.0 || max <= 0) return emptyList()
         val d = data
-        val usage = cacheUsage(d, lat, lon)
-        val osm: List<SignItem> = when (usage) {
-            SignCacheUse.LIVE -> d!!.signs
-            SignCacheUse.OFFLINE_HINT -> d!!.signs.map { sign ->
-                sign.copy(
-                    type = "offline_hint", label = "?", value = 0,
-                    name = "OSM lưu offline (chưa xác minh): " + sign.name
-                )
-            }
-            SignCacheUse.NONE -> emptyList()
-        }
-        // Verified entries win over cached OSM items at the same coordinates.
-        val within = (extraSigns + osm)
-            .filter { dist(lat, lon, it.lat, it.lon) <= radius }
-            .sortedBy { dist(lat, lon, it.lat, it.lon) }
-        val result = ArrayList<SignItem>(min(max, within.size))
-        for (sign in within) {
-            if (result.any { previous ->
-                    val nearby = dist(previous.lat, previous.lon, sign.lat, sign.lon) < 6.0
-                    nearby && (previous.type == sign.type ||
-                        (previous.type == "offline_hint" && sign.type != "offline_hint") ||
-                        (sign.type == "offline_hint" && previous.type != "offline_hint"))
+        val live = if (cacheUsage(d, lat, lon) == SignCacheUse.LIVE) d!!.signs else emptyList()
+        val archived = nearbyArchived(lat, lon)
+        // Priority before sorting: verified > fresh OSM > archived hints.
+        val selected = ArrayList<SignItem>(min(max, extraSigns.size + live.size + archived.size))
+        for (sign in extraSigns + live + archived) {
+            if (dist(lat, lon, sign.lat, sign.lon) > radius) continue
+            if (selected.any { prior ->
+                    dist(prior.lat, prior.lon, sign.lat, sign.lon) < 6.0 &&
+                        (prior.type == sign.type ||
+                            prior.type == "offline_hint" ||
+                            sign.type == "offline_hint")
                 }) continue
-            result.add(sign)
-            if (result.size >= max) break
+            selected.add(sign)
         }
-        return result
+        return selected.sortedBy { dist(lat, lon, it.lat, it.lon) }.take(max)
     }
 
     private fun cacheUsage(d: Data?, lat: Double, lon: Double): SignCacheUse {
@@ -516,7 +577,8 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             if (ups.size >= 4) break
         }
         val status = when {
-            !usable && cacheMode == SignCacheUse.OFFLINE_HINT ->
+            !usable && (cacheMode == SignCacheUse.OFFLINE_HINT ||
+                nearbyArchived(lat, lon).isNotEmpty()) ->
                 "Biển báo OSM offline: tham khảo, không có giới hạn tốc độ hợp lệ"
             !usable && fetching -> "Đang tải dữ liệu đường/biển báo..."
             !usable && error.isNotEmpty() -> error
