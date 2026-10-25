@@ -11,9 +11,12 @@ android {
         applicationId = "com.cartaxi.launcher"
         minSdk = 30
         targetSdk = 33
-        val run = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toIntOrNull() ?: 1
-        versionCode = run
-        versionName = "0.1.$run"
+        // This repository has a fresh GitHub Actions run counter. Use a new
+        // monotonically higher range to avoid downgrading legacy CarTaxiLauncher APKs.
+        // Updating an installed app still requires the exact same signing certificate.
+        val run = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toIntOrNull()?.coerceAtLeast(1) ?: 1
+        versionCode = 100_000 + run
+        versionName = "1.0.$run"
     }
 
     // Never configure production signing from a checked-in private key.
