@@ -112,6 +112,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     private var currentSettings = DashboardSettings()
     private val qrFile = File(appCtx.filesDir, "qr.png")
     private val maps = NativeMap(appCtx, handler)
+    private val renderer = LauncherRenderer()
     private var gpsRegistered = false
     private var gnssRegistered = false
     private var locationPermission = false
@@ -267,7 +268,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                     focusX: Float, focusY: Float, scaleFactor: Float
                 ) {
                     if (!surfaceState.canRun()) return
-                    val p = LauncherRenderer.hitMapPoint(focusX, focusY)
+                    val p = renderer.hitMapPoint(focusX, focusY)
                     if (p != null) maps.pinch(scaleFactor, p[0], p[1])
                 }
             }
@@ -275,13 +276,13 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
     }
 
     private fun handleClick(x: Float, y: Float) {
-        val i = LauncherRenderer.hitIcon(x, y)
+        val i = renderer.hitIcon(x, y)
         if (i >= 0) {
             selected = i
             draw()
             return
         }
-        LauncherRenderer.hitMapPoint(x, y)?.let { maps.tap(it[0], it[1]) }
+        renderer.hitMapPoint(x, y)?.let { maps.tap(it[0], it[1]) }
     }
 
     private fun battery(): Int {
@@ -309,7 +310,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
 
     private fun ensureMaps() {
         if (!surfaceState.canRun()) return
-        val r = LauncherRenderer.mapRect() ?: return
+        val r = renderer.mapRect() ?: return
         if (r.width() < 64f || r.height() < 64f) return
         val wantW = r.width().toInt()
         val wantH = r.height().toInt()
@@ -407,7 +408,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 signs = if (gpsReady) maps.signsState else SignsState.EMPTY,
                 settings = currentSettings
             )
-            LauncherRenderer.render(canvas, surfaceState.width,
+            renderer.render(canvas, surfaceState.width,
                 surfaceState.height, st)
         } catch (e: Exception) {
             logErr("CarService:draw", e)
