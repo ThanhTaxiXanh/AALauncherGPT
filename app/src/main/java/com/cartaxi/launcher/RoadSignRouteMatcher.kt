@@ -102,10 +102,17 @@ internal object RoadSignRouteMatcher {
     ): List<UpcomingSign> {
         // A graph with verified OSM node IDs supports multiple connected ways.
         // Geometry lacking node IDs retains the pre-existing single-way fallback.
-        if (graph?.containsWay(match.wayIndex) == true) {
-            return RoadGraphUpcomingSigns.upcoming(
-                lat, lon, heading, moving, accuracyM, match, roads, signs, graph
-            )
+        if (graph != null) {
+            if (graph.containsWay(match.wayIndex)) {
+                return RoadGraphUpcomingSigns.upcoming(
+                    lat, lon, heading, moving, accuracyM, match, roads, signs, graph
+                )
+            }
+            // Full node metadata but an untraversable/unknown oneway must not
+            // silently fall back to the geometry-only single-way guess.
+            val source = roads.getOrNull(match.wayIndex)
+            if (source != null && (source.oneway !in -1..1 ||
+                    source.nodeIds.size == source.points.size / 2)) return emptyList()
         }
         if (!moving || !heading.isFinite() || !lat.isFinite() || !lon.isFinite() ||
             lat !in -90.0..90.0 || lon !in -180.0..180.0 ||

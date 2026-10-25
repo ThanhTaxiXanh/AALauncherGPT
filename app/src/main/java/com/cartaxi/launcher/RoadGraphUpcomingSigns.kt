@@ -43,7 +43,6 @@ internal object RoadGraphUpcomingSigns {
                 sign.lat !in -90.0..90.0 || sign.lon !in -180.0..180.0 ||
                 pointDistance(lat, lon, sign.lat, sign.lon) > MAX_DISTANCE_M + 30.0) continue
             var distance: Double? = null
-            var travelBearing = 0.0
             for (leg in legs) {
                 val geometry = roads[leg.wayIndex]
                 val projected = projectSegment(sign.lat, sign.lon, geometry, leg.segmentIndex) ?: continue
@@ -90,7 +89,6 @@ internal object RoadGraphUpcomingSigns {
                     sign.type != "signals" && sign.type != "bump") continue
                 if (distance == null || dist < distance) {
                     distance = dist
-                    travelBearing = roadBearing
                 }
             }
             val ahead = distance ?: continue

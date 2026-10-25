@@ -92,6 +92,18 @@ class OsmRoadGraphTest {
         assertTrue(OsmRoadGraph(basic()).trace(0, 0, true, Double.NaN).isEmpty())
     }
 
+    @Test fun unknownOnewayWithOsmNodesNeverFallsBackToUnrestrictedWarnings() {
+        val road = way(1, doubleArrayOf(-100.0, 100.0),
+            doubleArrayOf(0.0, 0.0), longArrayOf(1, 2), oneWay = 2)
+        val sign = SignItem(0.0, 50.0 / metres, "speed", "50", "50", 50, 270.0)
+        val warnings = RoadSignRouteMatcher.upcoming(
+            0.0, 0.0, 90.0, true, 3.0,
+            SpeedWayMatch(0, 1, true), listOf(road), listOf(sign),
+            OsmRoadGraph(listOf(road))
+        )
+        assertTrue(warnings.isEmpty())
+    }
+
     @Test fun graphAlongDistanceContinuesIntoNextWayWithoutStraightLineShortcut() {
         val roads = listOf(
             way(1, doubleArrayOf(-100.0, 0.0), doubleArrayOf(0.0, 0.0), longArrayOf(1, 2)),
