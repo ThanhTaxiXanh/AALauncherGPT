@@ -98,14 +98,15 @@ internal object RoadSignRouteMatcher {
         lat: Double, lon: Double, heading: Double, moving: Boolean,
         accuracyM: Double, match: SpeedWayMatch,
         roads: List<SpeedWayGeometry>, signs: List<SignItem>,
-        graph: OsmRoadGraph? = null
+        graph: OsmRoadGraph? = null,
+        index: RoadSpatialIndex? = null
     ): List<UpcomingSign> {
         // A graph with verified OSM node IDs supports multiple connected ways.
         // Geometry lacking node IDs retains the pre-existing single-way fallback.
         if (graph != null) {
             if (graph.containsWay(match.wayIndex)) {
                 return RoadGraphUpcomingSigns.upcoming(
-                    lat, lon, heading, moving, accuracyM, match, roads, signs, graph
+                    lat, lon, heading, moving, accuracyM, match, roads, signs, graph, index
                 )
             }
             // Full node metadata but an untraversable/unknown oneway must not
@@ -122,14 +123,16 @@ internal object RoadSignRouteMatcher {
         if (road.wayId != match.wayId || road.points.size < 4) return emptyList()
 
         val route = RouteLine(road, lat, lon)
-        val rivals by lazy { roads.filter { it.wayId != road.wayId }.map { RouteLine(it, lat, lon) } }
+        val rivals by lazy {
+            roads.filter { it.wayId != road.wayId }.map { RouteLine(it, lat, lon) }
+        }
         val car = route.projectPoint(0.0, 0.0) ?: return emptyList()
         if (car.distanceM > min(25.0, max(8.0, accuracyM * 1.5 + 2.0))) return emptyList()
         val carBearing = if (match.forward) car.forwardBearing else norm(car.forwardBearing + 180.0)
         if (angleDiff(carBearing, heading) > MAX_CAR_HEADING_DEGREES) return emptyList()
 
         val candidate = ArrayList<UpcomingSign>()
-        for (sign in signs) {
+        for (sign in index?.signsNear(lat, lon, MAX_LOOKAHEAD_M + 30.0) ?: signs) {
             if (!sign.lat.isFinite() || !sign.lon.isFinite()) continue
             // Route distance can only exceed straight-line distance; this
             // cheap bound avoids projecting remote OSM nodes.
@@ -141,10 +144,13 @@ internal object RoadSignRouteMatcher {
             // If the sign belongs to a different OSM way, do not project it
             // onto the current way just because two centerlines are close.
             if (nodeId != null && idx < 0 &&
-                roads.any { other -> other.nodeIds.contains(nodeId) }) continue
-            val sharedNode = idx >= 0 && nodeId != null && roads.any { other ->
-                other.wayId != road.wayId && other.nodeIds.contains(nodeId)
-            }
+                (index?.waysAtNode(nodeId)?.isNotEmpty()
+                    ?: roads.any { other -> other.nodeIds.contains(nodeId) })) continue
+            val sharedNode = idx >= 0 && nodeId != null &&
+                (index?.waysAtNode(nodeId)?.any { it != match.wayIndex }
+                    ?: roads.withIndex().any { (i, other) ->
+                        i != match.wayIndex && other.nodeIds.contains(nodeId)
+                    })
             if (sharedNode && sign.facing == null) continue
 
             val projection = if (idx >= 0) {
@@ -155,7 +161,22 @@ internal object RoadSignRouteMatcher {
             if (idx < 0) {
                 // Geometry-only attachment must be unique across OSM ways.
                 var ambiguous = false
-                for (other in rivals) {
+                val nearbyRivals = index?.segmentsNear(
+                    sign.lat, sign.lon, MAX_SIGN_OFFSET_M + 5.0
+                )
+                if (nearbyRivals != null) {
+                    for (ref in nearbyRivals) {
+                        if (ref.wayIndex == match.wayIndex) continue
+                        val line = RouteLine(roads[ref.wayIndex], lat, lon)
+                        val otherProjection = line.project(sign.lat, sign.lon, lat, lon)
+                            ?: continue
+                        if (otherProjection.distanceM <= MAX_SIGN_OFFSET_M &&
+                            otherProjection.distanceM <= projection.distanceM + 5.0) {
+                            ambiguous = true
+                            break
+                        }
+                    }
+                } else for (other in rivals) {
                     val otherProjection = other.project(sign.lat, sign.lon, lat, lon) ?: continue
                     if (otherProjection.distanceM <= MAX_SIGN_OFFSET_M &&
                         otherProjection.distanceM <= projection.distanceM + 5.0) {

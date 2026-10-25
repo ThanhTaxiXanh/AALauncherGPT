@@ -80,6 +80,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val ways: List<Way>,
         val geometries: List<SpeedWayGeometry>,
         val graph: OsmRoadGraph,
+        val index: RoadSpatialIndex,
         val signs: List<SignItem>,
         val timeMs: Long,
         val stale: Boolean,
@@ -402,6 +403,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         return Data(
             lat, lon, ways, geometries,
             OsmRoadGraph(geometries, OsmTurnRestrictions(restrictions)),
+            RoadSpatialIndex(geometries, signs + extraSigns),
             signs, now, stale, savedAtEpochMs
         )
     }
@@ -601,7 +603,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         // 1) Match an OSM way using filtered GPS and its reported accuracy.
         // Ambiguous parallel, crossing or stacked roads produce an unknown limit.
         val match = if (usable) speedWayMatcher.match(
-            lat, lon, heading, moving, accuracyM, d!!.geometries
+            lat, lon, heading, moving, accuracyM, d!!.geometries, d.index
         ) else null
         val w = match?.let { d!!.ways[it.wayIndex] }
         if (w != null) {
@@ -652,7 +654,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val ups = if (observed != null) {
             RoadSignRouteMatcher.upcoming(
                 lat, lon, heading, moving, accuracyM,
-                observed, d!!.geometries, d.signs + extraSigns, d.graph
+                observed, d!!.geometries, d.signs + extraSigns, d.graph, d.index
             )
         } else emptyList()
 

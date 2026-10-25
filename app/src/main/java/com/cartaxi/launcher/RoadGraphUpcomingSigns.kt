@@ -21,7 +21,8 @@ internal object RoadGraphUpcomingSigns {
     fun upcoming(
         lat: Double, lon: Double, heading: Double, moving: Boolean,
         accuracyM: Double, match: SpeedWayMatch,
-        roads: List<SpeedWayGeometry>, signs: List<SignItem>, graph: OsmRoadGraph
+        roads: List<SpeedWayGeometry>, signs: List<SignItem>,
+        graph: OsmRoadGraph, index: RoadSpatialIndex? = null
     ): List<UpcomingSign> {
         if (!moving || !heading.isFinite() || !lat.isFinite() || !lon.isFinite() ||
             lat !in -90.0..90.0 || lon !in -180.0..180.0 ||
@@ -38,7 +39,7 @@ internal object RoadGraphUpcomingSigns {
         if (legs.isEmpty()) return emptyList()
 
         val results = ArrayList<UpcomingSign>()
-        for (sign in signs) {
+        for (sign in index?.signsNear(lat, lon, MAX_DISTANCE_M + 30.0) ?: signs) {
             if (!sign.lat.isFinite() || !sign.lon.isFinite() ||
                 sign.lat !in -90.0..90.0 || sign.lon !in -180.0..180.0 ||
                 pointDistance(lat, lon, sign.lat, sign.lon) > MAX_DISTANCE_M + 30.0) continue
@@ -53,12 +54,14 @@ internal object RoadGraphUpcomingSigns {
                     val nodeAtEnd = geometry.nodeIds.getOrNull(leg.segmentIndex + 1)
                     // Only the matched edge may establish exact OSM membership.
                     if (pointId != nodeAtBeginning && pointId != nodeAtEnd &&
-                        roads.any { other -> other.nodeIds.contains(pointId) }) continue
+                        (index?.waysAtNode(pointId)?.isNotEmpty()
+                            ?: roads.any { other -> other.nodeIds.contains(pointId) })) continue
                     // A shared node without facing or forward/backward tags
                     // does not prove which road/approach the sign applies to.
                     if ((pointId == nodeAtBeginning || pointId == nodeAtEnd) &&
                         sign.facing == null && sign.wayDirection == null &&
-                        roads.count { it.nodeIds.contains(pointId) } > 1) continue
+                        (index?.waysAtNode(pointId)?.size
+                            ?: roads.count { it.nodeIds.contains(pointId) }) > 1) continue
                 }
                 if (sign.wayDirection != null &&
                     sign.wayDirection != (if (leg.forward) 1 else -1)) continue
@@ -70,13 +73,27 @@ internal object RoadGraphUpcomingSigns {
                 if (dist < 10.0 || dist > MAX_DISTANCE_M) continue
                 // Geometry-only sign nodes must not have equally plausible
                 // associations with other ways (parallel/crossing geometry).
-                if (pointId == null || roads.none { it.nodeIds.contains(pointId) }) {
-                    val ambiguous = roads.withIndex().any { (idx, other) ->
+                if (pointId == null ||
+                    (index?.waysAtNode(pointId)?.isEmpty()
+                        ?: roads.none { it.nodeIds.contains(pointId) })) {
+                    val near = index?.segmentsNear(
+                        sign.lat, sign.lon, SIGN_OFFSET_M + 5.0
+                    )
+                    val ambiguous = if (near != null) near.any { ref ->
+                        if (ref.wayIndex == leg.wayIndex) false
+                        else {
+                            val p = projectSegment(
+                                sign.lat, sign.lon, roads[ref.wayIndex], ref.segmentIndex
+                            )
+                            p != null && p.distM <= SIGN_OFFSET_M &&
+                                p.distM <= projected.distM + 5.0
+                        }
+                    } else roads.withIndex().any { (idx, other) ->
                         if (idx == leg.wayIndex) false
                         else (0 until other.points.size / 2 - 1).any { j ->
-                            val projection = projectSegment(sign.lat, sign.lon, other, j)
-                            projection != null && projection.distM <= SIGN_OFFSET_M &&
-                                projection.distM <= projected.distM + 5.0
+                            val p = projectSegment(sign.lat, sign.lon, other, j)
+                            p != null && p.distM <= SIGN_OFFSET_M &&
+                                p.distM <= projected.distM + 5.0
                         }
                     }
                     if (ambiguous) continue

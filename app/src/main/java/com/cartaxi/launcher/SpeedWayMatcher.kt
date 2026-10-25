@@ -36,7 +36,8 @@ internal class SpeedWayMatcher {
 
     fun match(
         lat: Double, lon: Double, heading: Double,
-        moving: Boolean, accuracyM: Double, roads: List<SpeedWayGeometry>
+        moving: Boolean, accuracyM: Double, roads: List<SpeedWayGeometry>,
+        index: RoadSpatialIndex? = null
     ): SpeedWayMatch? {
         if (!lat.isFinite() || !lon.isFinite() ||
             lat !in -90.0..90.0 || lon !in -180.0..180.0 ||
@@ -48,33 +49,39 @@ internal class SpeedWayMatcher {
         val gate = min(25.0, max(8.0, accuracyM * 1.5 + 2.0))
         val hasHeading = moving && heading.isFinite()
         val candidates = ArrayList<Candidate>()
-        for ((index, road) in roads.withIndex()) {
+        val refs = index?.segmentsNear(lat, lon, gate)
+            ?: roads.indices.flatMap { way ->
+                (0 until roads[way].points.size / 2 - 1).map { RoadSpatialIndex.Segment(way, it) }
+            }
+        for (ref in refs) {
+            val roadIndex = ref.wayIndex
+            val road = roads[roadIndex]
             if (road.wayId <= 0L) continue
             val pts = road.points
-            for (i in 0 until pts.size / 2 - 1) {
-                val ax = (pts[2 * i + 1] - lon) * kx
-                val ay = (pts[2 * i] - lat) * ky
-                val bx = (pts[2 * i + 3] - lon) * kx
-                val by = (pts[2 * i + 2] - lat) * ky
-                val dx = bx - ax
-                val dy = by - ay
-                val len2 = dx * dx + dy * dy
-                if (!len2.isFinite() || len2 < 0.01) continue
-                val t = (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
-                val x = ax + t * dx
-                val y = ay + t * dy
-                val distance = hypot(x, y)
-                if (!distance.isFinite() || distance > gate) continue
-                val bearing = normalize(Math.toDegrees(atan2(dx, dy)))
-                val difference = if (hasHeading) angleDifference(bearing, heading) else 0.0
-                val axisError = min(difference, 180.0 - difference)
-                if (hasHeading && axisError > 45.0) continue
-                val score = distance + if (hasHeading) axisError * 0.25 else 0.0
-                candidates.add(Candidate(
-                    index, road.wayId, road.level, x, y, distance,
-                    !hasHeading || difference <= 90.0, score
-                ))
-            }
+            val i = ref.segmentIndex
+            if (i * 2 + 3 >= pts.size) continue
+            val ax = (pts[2 * i + 1] - lon) * kx
+            val ay = (pts[2 * i] - lat) * ky
+            val bx = (pts[2 * i + 3] - lon) * kx
+            val by = (pts[2 * i + 2] - lat) * ky
+            val dx = bx - ax
+            val dy = by - ay
+            val len2 = dx * dx + dy * dy
+            if (!len2.isFinite() || len2 < 0.01) continue
+            val t = (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
+            val x = ax + t * dx
+            val y = ay + t * dy
+            val distance = hypot(x, y)
+            if (!distance.isFinite() || distance > gate) continue
+            val bearing = normalize(Math.toDegrees(atan2(dx, dy)))
+            val difference = if (hasHeading) angleDifference(bearing, heading) else 0.0
+            val axisError = min(difference, 180.0 - difference)
+            if (hasHeading && axisError > 45.0) continue
+            val score = distance + if (hasHeading) axisError * 0.25 else 0.0
+            candidates.add(Candidate(
+                roadIndex, road.wayId, road.level, x, y, distance,
+                !hasHeading || difference <= 90.0, score
+            ))
         }
         // Continuity is a minor tie-breaker, never an ambiguity override.
         val best = candidates.minWithOrNull(
