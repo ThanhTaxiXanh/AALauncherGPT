@@ -78,7 +78,8 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val geometries: List<SpeedWayGeometry>,
         val signs: List<SignItem>,
         val timeMs: Long,
-        val stale: Boolean
+        val stale: Boolean,
+        val savedAtEpochMs: Long
     )
 
     @Volatile private var data: Data? = null
@@ -86,6 +87,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     @Volatile private var error = ""
     @Volatile private var lastHttpStatus = ""
     private var lastTry = -100000L
+    private val diskCache = OfflineSignCache(cacheFile)
     private val exec = Executors.newSingleThreadExecutor()
 
     private val speedWayMatcher = SpeedWayMatcher()
@@ -116,12 +118,13 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         exec.execute {
             try {
                 val txt = download(lat, lon)
-                val parsed = parse(txt, lat, lon, SystemClock.elapsedRealtime(), false)
+                val savedAtMs = System.currentTimeMillis()
+                val parsed = parse(txt, lat, lon, SystemClock.elapsedRealtime(), false, savedAtMs)
                 data = parsed
                 error = ""
                 lastHttpStatus = ""
                 try {
-                    cacheFile.writeText("$lat,$lon\n$txt")
+                    diskCache.write(lat, lon, txt, savedAtMs)
                 } catch (e: Exception) {
                     logErr("RoadSigns:113", e)
                 }
@@ -136,14 +139,13 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
 
     private fun loadCache() {
         try {
-            if (!cacheFile.exists()) return
-            val t = cacheFile.readText()
-            val nl = t.indexOf('\n')
-            if (nl < 0) return
-            val head = t.substring(0, nl).split(",")
-            val lat = head[0].toDouble()
-            val lon = head[1].toDouble()
-            if (data == null) data = parse(t.substring(nl + 1), lat, lon, 0L, true)
+            val snapshot = diskCache.read() ?: return
+            // Disk data is never promoted to active speed limits or live warnings,
+            // even if the saved timestamp is recent.
+            val stored = parse(
+                snapshot.payload, snapshot.lat, snapshot.lon, 0L, true, snapshot.savedAtEpochMs
+            )
+            if (data == null) data = stored
         } catch (e: Exception) {
             logErr("RoadSigns:133", e)
         }
@@ -212,7 +214,10 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         return if (v in 5..160) v else null
     }
 
-    private fun parse(txt: String, lat: Double, lon: Double, now: Long, stale: Boolean): Data {
+    private fun parse(
+        txt: String, lat: Double, lon: Double,
+        now: Long, stale: Boolean, savedAtEpochMs: Long
+    ): Data {
         val els = JSONObject(txt).getJSONArray("elements")
         val ways = ArrayList<Way>()
         val signs = ArrayList<SignItem>()
@@ -256,7 +261,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 }
             }
         }
-        return Data(lat, lon, ways, ways.map { it.geometry }, signs, now, stale)
+        return Data(lat, lon, ways, ways.map { it.geometry }, signs, now, stale, savedAtEpochMs)
     }
 
     // OSM direction=* describes the way the sign physically faces. A driver
@@ -359,13 +364,54 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
 
     private fun angDiff(a: Double, b: Double): Double = abs(((a - b + 540.0) % 360.0) - 180.0)
 
-    /** Biển báo trong bán kính, dùng để vẽ lên bản đồ. */
+    /**
+     * Fresh Overpass signs are shown as originally tagged. Offline or timed-out
+     * OSM signs are visible only as grey '?' hints, never as speed-limit discs.
+     * Verified supplemental GeoJSON remains distinguishable and available offline.
+     */
     fun nearby(lat: Double, lon: Double, radius: Double, max: Int): List<SignItem> {
+        if (lat !in -90.0..90.0 || lon !in -180.0..180.0 || radius <= 0.0 || max <= 0) return emptyList()
         val d = data
-        val osm = if (d != null && !d.stale && dist(lat, lon, d.lat, d.lon) <= MAX_DATA_DISTANCE_M && SystemClock.elapsedRealtime() - d.timeMs <= MAX_AGE_MS) d.signs else emptyList()
-        return (osm + extraSigns).filter { dist(lat, lon, it.lat, it.lon) <= radius }
+        val usage = cacheUsage(d, lat, lon)
+        val osm: List<SignItem> = when (usage) {
+            SignCacheUse.LIVE -> d!!.signs
+            SignCacheUse.OFFLINE_HINT -> d!!.signs.map { sign ->
+                sign.copy(
+                    type = "offline_hint", label = "?", value = 0,
+                    name = "OSM lưu offline (chưa xác minh): " + sign.name
+                )
+            }
+            SignCacheUse.NONE -> emptyList()
+        }
+        // Verified entries win over cached OSM items at the same coordinates.
+        val within = (extraSigns + osm)
+            .filter { dist(lat, lon, it.lat, it.lon) <= radius }
             .sortedBy { dist(lat, lon, it.lat, it.lon) }
-            .take(max)
+        val result = ArrayList<SignItem>(min(max, within.size))
+        for (sign in within) {
+            if (result.any { previous ->
+                    val nearby = dist(previous.lat, previous.lon, sign.lat, sign.lon) < 6.0
+                    nearby && (previous.type == sign.type ||
+                        (previous.type == "offline_hint" && sign.type != "offline_hint") ||
+                        (sign.type == "offline_hint" && previous.type != "offline_hint"))
+                }) continue
+            result.add(sign)
+            if (result.size >= max) break
+        }
+        return result
+    }
+
+    private fun cacheUsage(d: Data?, lat: Double, lon: Double): SignCacheUse {
+        if (d == null) return SignCacheUse.NONE
+        return SignCachePolicy.classify(
+            fromDisk = d.stale,
+            ageElapsedMs = SystemClock.elapsedRealtime() - d.timeMs,
+            savedAtEpochMs = d.savedAtEpochMs,
+            nowEpochMs = System.currentTimeMillis(),
+            distanceM = dist(lat, lon, d.lat, d.lon),
+            maxDistanceM = MAX_DATA_DISTANCE_M,
+            liveTtlMs = MAX_AGE_MS
+        )
     }
 
     private fun commit(v: Int, est: Boolean, now: Long) {
@@ -396,7 +442,8 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             pendV = null
             pendN = 0
         }
-        val usable = d != null && !d.stale && dist(lat, lon, d.lat, d.lon) <= MAX_DATA_DISTANCE_M && now - d.timeMs <= MAX_AGE_MS
+        val cacheMode = cacheUsage(d, lat, lon)
+        val usable = cacheMode == SignCacheUse.LIVE
         if (!usable) {
             shown = null
             lastWayId = null
@@ -469,6 +516,8 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             if (ups.size >= 4) break
         }
         val status = when {
+            !usable && cacheMode == SignCacheUse.OFFLINE_HINT ->
+                "Biển báo OSM offline: tham khảo, không có giới hạn tốc độ hợp lệ"
             !usable && fetching -> "Đang tải dữ liệu đường/biển báo..."
             !usable && error.isNotEmpty() -> error
             !usable -> "Chưa có dữ liệu đường cập nhật"

@@ -703,6 +703,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         "yield" -> "#ef6c00"
         "signals" -> "#2e7d32"
         "bump" -> "#ef8f00"
+        "offline_hint" -> "#78838e"
         else -> "#1565c0"
     }
 
