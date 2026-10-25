@@ -19,6 +19,8 @@ import android.media.ImageReader
 import android.os.Bundle
 import android.os.Handler
 import android.os.SystemClock
+import android.content.pm.ApplicationInfo
+import android.util.Log
 import android.util.TypedValue
 import android.view.Display
 import android.view.Gravity
@@ -100,6 +102,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var arrowNominal = 48
     private var arrowView = 80
     private val startRetry = MapStartRetry()
+    private val perfDebug = (appCtx.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    private val performance = MapPerformanceMonitor()
 
     // camera / người dùng
     private val cameraController = DrivingCameraController()
@@ -143,10 +147,20 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     private val loop = object : Runnable {
         override fun run() {
+            val beganNs = if (perfDebug) SystemClock.elapsedRealtimeNanos() else 0L
             try {
                 step()
             } catch (t: Throwable) {
                 logErr("NativeMap:152", t)
+            } finally {
+                if (perfDebug) {
+                    performance.recordStepNs(SystemClock.elapsedRealtimeNanos() - beganNs)
+                    performance.snapshotIfDue(SystemClock.elapsedRealtime())?.let { sample ->
+                        val rt = Runtime.getRuntime()
+                        val usedBytes = rt.totalMemory() - rt.freeMemory()
+                        Log.d("CarTaxiPerf", sample.logLine(usedBytes))
+                    }
+                }
             }
             main.postDelayed(this, 33L)
         }
@@ -166,6 +180,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         if (vd != null || !startRetry.canAttempt(SystemClock.elapsedRealtime())) return
         val vw = maxOf(64, w / 2 * 2)
         val vh = maxOf(64, h / 2 * 2)
+        if (perfDebug) {
+            performance.reset(SystemClock.elapsedRealtime())
+            performance.startMapLoad(SystemClock.elapsedRealtime())
+        }
         try {
             update(System.currentTimeMillis())
             MapLibre.getInstance(appCtx)
@@ -236,6 +254,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         roadMatcher.reset()
         lastAccuracyM = Double.POSITIVE_INFINITY
         snapped = false
+        if (perfDebug) performance.reset(SystemClock.elapsedRealtime())
     }
 
     // ---------- khung hình ----------
@@ -247,6 +266,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             null
         }
         if (img == null) return
+        val beginNs = if (perfDebug) SystemClock.elapsedRealtimeNanos() else 0L
+        var copied = false
         try {
             val p = img.planes[0]
             val rw = p.rowStride / p.pixelStride
@@ -258,10 +279,14 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             val buf = p.buffer
             buf.rewind()
             b!!.copyPixelsFromBuffer(buf)
+            copied = true
         } catch (e: Exception) {
             status = "Lỗi khung hình: " + e.message
         } finally {
             img.close()
+        }
+        if (copied && perfDebug) {
+            performance.recordFrame(SystemClock.elapsedRealtime(), SystemClock.elapsedRealtimeNanos() - beginNs)
         }
         onFrame?.invoke()
     }
@@ -427,6 +452,15 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     fun onLocation(loc: Location) {
+        val beginNs = if (perfDebug) SystemClock.elapsedRealtimeNanos() else 0L
+        try {
+            updateLocationInternal(loc)
+        } finally {
+            if (perfDebug) performance.recordGpsNs(SystemClock.elapsedRealtimeNanos() - beginNs)
+        }
+    }
+
+    private fun updateLocationInternal(loc: Location) {
         val now = SystemClock.elapsedRealtime()
         if (hasFix) {
             if (loc.hasAccuracy() && loc.accuracy > 60f) return
@@ -859,6 +893,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             tuneLabels(style)
             installSigns(style)
             status = "Bản đồ đã tải"
+            if (perfDebug) {
+                performance.finishMapLoad(SystemClock.elapsedRealtime())?.let {
+                    Log.d("CarTaxiPerf", "initial_map_style_ms=$it")
+                }
+            }
         }
     }
 
