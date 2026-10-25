@@ -3,6 +3,13 @@ package com.cartaxi.launcher
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ComponentName
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
+import java.io.ByteArrayOutputStream
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -33,6 +40,15 @@ class MainActivity : Activity() {
     private val reqLocation = 1
     private val reqReportExport = 3
     private val reqNotifications = 4
+    private val reqAudio = 5
+    private val reqExportQr = 6
+    private var exportQrId: String? = null
+    private val qrLibrary by lazy { QrLibraryStore(filesDir) }
+    private lateinit var qrBox: LinearLayout
+    private lateinit var mediaStatus: TextView
+    private var mediaFuture: ListenableFuture<MediaController>? = null
+    private var mediaController: MediaController? = null
+    private val mediaPrefs by lazy { getSharedPreferences("local_media", MODE_PRIVATE) }
     private var pendingReminderSettings: EventReminderSettings? = null
     private var exportWithGps = false
     private val settingsRepository by lazy {
@@ -101,6 +117,9 @@ class MainActivity : Activity() {
         root.addView(title)
         root.addView(preview)
         root.addView(pick)
+        qrBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(qrBox)
+        addMediaControls(root)
         root.addView(perm)
         addDashboardSettings(root)
         root.addView(evTitle)
@@ -146,6 +165,7 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         refreshPreview()
+        refreshQrList()
         refreshEvents()
         refreshReports()
         try {
@@ -960,11 +980,183 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- Phase 8 · QR collection and audio ----------
+    private fun refreshQrList() {
+        qrBox.removeAllViews()
+        val items = try { qrLibrary.entries() } catch (e: Exception) {
+            logErr("MainActivity:qrList", e)
+            qrBox.addView(TextView(this).apply {
+                text = "Thư viện QR không đọc được; không ghi đè dữ liệu cũ."
+            })
+            return
+        }
+        val active = qrLibrary.current()?.id
+        qrBox.addView(TextView(this).apply {
+            text = "Thư viện QR cá nhân (${items.size}/30 ảnh)"
+            textSize = 17f
+        })
+        for (entry in items) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            row.addView(TextView(this).apply {
+                text = (if (entry.id == active) "● " else "○ ") + entry.title
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(Button(this).apply {
+                text = "Chọn"
+                isEnabled = entry.id != active
+                setOnClickListener {
+                    try {
+                        qrLibrary.select(entry.id)
+                        refreshPreview()
+                        refreshQrList()
+                    } catch (e: Exception) { logErr("MainActivity:qrSelect", e) }
+                }
+            })
+            row.addView(Button(this).apply {
+                text = "Đổi tên"
+                setOnClickListener {
+                    val input = EditText(this@MainActivity).apply { setText(entry.title) }
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Đổi tên QR")
+                        .setView(input)
+                        .setNegativeButton("Hủy", null)
+                        .setPositiveButton("Lưu") { _, _ ->
+                            try {
+                                qrLibrary.rename(entry.id, input.text.toString())
+                                refreshQrList()
+                            } catch (e: Exception) {
+                                Toast.makeText(this@MainActivity,
+                                    "Không đổi tên được QR.", Toast.LENGTH_LONG).show()
+                            }
+                        }.show()
+                }
+            })
+            row.addView(Button(this).apply {
+                text = "Xóa"
+                setOnClickListener {
+                    AlertDialog.Builder(this@MainActivity).setTitle("Xóa ảnh QR?")
+                        .setMessage("Không xóa ảnh gốc trên điện thoại.")
+                        .setNegativeButton("Hủy", null)
+                        .setPositiveButton("Xóa") { _, _ ->
+                            try {
+                                qrLibrary.remove(entry.id)
+                                refreshPreview()
+                                refreshQrList()
+                            } catch (e: Exception) {
+                                logErr("MainActivity:qrRemove", e)
+                            }
+                        }.show()
+                }
+            })
+            qrBox.addView(row)
+        }
+        qrBox.addView(Button(this).apply {
+            text = "Xuất ảnh QR đang chọn (PNG)"
+            isEnabled = active != null
+            setOnClickListener {
+                exportQrId = active
+                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_TITLE, "AALauncherGPT_QR.png")
+                }, reqExportQr)
+            }
+        })
+    }
+
+    private fun addMediaControls(root: LinearLayout) {
+        root.addView(TextView(this).apply {
+            text = "Media3 · Phát âm thanh cục bộ"
+            textSize = 18f
+            setPadding(0, pad, 0, 0)
+        })
+        mediaStatus = TextView(this).apply {
+            text = mediaPrefs.getString("title", "Chưa chọn âm thanh")
+        }
+        root.addView(mediaStatus)
+        root.addView(Button(this).apply {
+            text = "Chọn tệp âm thanh (không tự phát)"
+            setOnClickListener {
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "audio/*"
+                }, reqAudio)
+            }
+        })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(Button(this).apply {
+            text = "Phát"
+            setOnClickListener { playLocalAudio() }
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(Button(this).apply {
+            text = "Tạm dừng"
+            setOnClickListener { mediaController?.pause() }
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(row)
+        root.addView(Button(this).apply {
+            text = "Bỏ tệp đã chọn"
+            setOnClickListener {
+                mediaController?.stop()
+                mediaController?.clearMediaItems()
+                mediaPrefs.edit().clear().apply()
+                mediaStatus.text = "Chưa chọn âm thanh"
+            }
+        })
+    }
+
+    private fun playLocalAudio() {
+        val uri = mediaPrefs.getString("uri", null)?.let(Uri::parse)
+        if (uri == null || uri.scheme != "content") {
+            Toast.makeText(this, "Chọn tệp âm thanh trước.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val controller = mediaController
+        if (controller == null) {
+            Toast.makeText(this, "MediaSession chưa kết nối.", Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            contentResolver.openFileDescriptor(uri, "r")?.use { } ?: error("Mất quyền đọc")
+            val title = mediaPrefs.getString("title", "Âm thanh cá nhân")!!
+            controller.setMediaItem(MediaItem.Builder().setUri(uri)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build()).build())
+            controller.prepare()
+            controller.play()
+            mediaStatus.text = "Đang phát: $title"
+        } catch (e: Exception) {
+            logErr("MainActivity:audioPlay", e)
+            mediaStatus.text = "Không phát được. Hãy chọn lại tệp."
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val token = SessionToken(this, ComponentName(this, LocalAudioService::class.java))
+        val future = MediaController.Builder(this, token).buildAsync()
+        mediaFuture = future
+        future.addListener({
+            if (mediaFuture === future) try {
+                mediaController = future.get()
+            } catch (e: Exception) {
+                logErr("MainActivity:mediaConnect", e)
+            }
+        }, mainExecutor)
+    }
+
+    override fun onStop() {
+        mediaController = null
+        mediaFuture?.let { MediaController.releaseFuture(it) }
+        mediaFuture = null
+        super.onStop()
+    }
+
     // ---------- ảnh QR ----------
 
     private fun refreshPreview() {
         val f = File(filesDir, "qr.png")
         if (f.exists()) preview.setImageBitmap(BitmapFactory.decodeFile(f.path))
+        else preview.setImageDrawable(null)
     }
 
     @Deprecated("Deprecated in Java")
@@ -977,28 +1169,70 @@ class MainActivity : Activity() {
             return
         }
         if (requestCode == reqPick && resultCode == RESULT_OK) {
+            data?.data?.let { saveQr(it) }
+            return
+        }
+        if (requestCode == reqAudio && resultCode == RESULT_OK) {
             val uri = data?.data ?: return
-            saveQr(uri)
+            try {
+                require(uri.scheme == "content")
+                contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val title = uri.lastPathSegment?.takeLast(80) ?: "Âm thanh cá nhân"
+                check(mediaPrefs.edit().putString("uri", uri.toString())
+                    .putString("title", title).commit())
+                mediaStatus.text = "Đã chọn: $title"
+            } catch (e: Exception) {
+                logErr("MainActivity:audioSelect", e)
+                Toast.makeText(this, "Không lưu được quyền đọc âm thanh.",
+                    Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        if (requestCode == reqExportQr) {
+            val id = exportQrId
+            exportQrId = null
+            if (resultCode == RESULT_OK && id != null && data?.data != null) {
+                try {
+                    val file = qrLibrary.fileFor(id) ?: error("QR không tồn tại")
+                    contentResolver.openOutputStream(data.data!!)?.use { dest ->
+                        file.inputStream().use { it.copyTo(dest) }
+                    } ?: error("Không mở được file đích")
+                    Toast.makeText(this, "Đã xuất QR.", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    logErr("MainActivity:qrExport", e)
+                    Toast.makeText(this, "Xuất QR thất bại.", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
     private fun saveQr(uri: Uri) {
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            var sample = 1
-            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1600) sample *= 2
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            val bmp = contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, opts)
-            } ?: throw IllegalStateException("decode")
-            File(filesDir, "qr.png").outputStream().use {
-                bmp.compress(Bitmap.CompressFormat.PNG, 100, it)
-            }
+            contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, bounds)
+            } ?: error("Không đọc được ảnh")
+            require(bounds.outWidth in 1..2600 && bounds.outHeight in 1..2600)
+            val bitmap = contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it)
+            } ?: error("Ảnh bị lỗi")
+            val stream = ByteArrayOutputStream()
+            try {
+                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
+            } finally { bitmap.recycle() }
+            val name = uri.lastPathSegment?.substringAfterLast('/')?.take(60)
+                ?.ifBlank { "Mã QR" } ?: "Mã QR"
+            val added = qrLibrary.add(name, stream.toByteArray())
+            qrLibrary.select(added.id)
             refreshPreview()
-            Toast.makeText(this, "Đã lưu mã QR", Toast.LENGTH_SHORT).show()
+            refreshQrList()
+            Toast.makeText(this, "Đã thêm mã QR vào thư viện.",
+                Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Toast.makeText(this, "Không đọc được ảnh", Toast.LENGTH_SHORT).show()
+            logErr("MainActivity:qrImport", e)
+            Toast.makeText(this, "Không nhập được QR (ảnh quá lớn hoặc lỗi).",
+                Toast.LENGTH_LONG).show()
         }
     }
 }
