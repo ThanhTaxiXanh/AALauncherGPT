@@ -32,6 +32,8 @@ class MainActivity : Activity() {
     private val reqPick = 2
     private val reqLocation = 1
     private val reqReportExport = 3
+    private val reqNotifications = 4
+    private var pendingReminderSettings: EventReminderSettings? = null
     private var exportWithGps = false
     private val settingsRepository by lazy {
         DashboardSettingsRepository(this)
@@ -102,8 +104,20 @@ class MainActivity : Activity() {
         root.addView(perm)
         addDashboardSettings(root)
         root.addView(evTitle)
+        val today = java.time.LocalDate.now()
+        val lunarToday = LunarCalendar.solarToLunar(
+            today.dayOfMonth, today.monthValue, today.year
+        )
+        root.addView(TextView(this).apply {
+            text = "Hôm nay ${today.dayOfMonth}/${today.monthValue}/${today.year} (DL) · " +
+                "${lunarToday.day}/${lunarToday.month}/${lunarToday.year} (ÂL)" +
+                (if (lunarToday.leap) " · tháng nhuận" else "") +
+                "\nNăm ${LunarCalendar.canChi(lunarToday.year)} · múi giờ tính Âm lịch UTC+7"
+            textSize = 14f
+        })
         root.addView(eventBox)
         root.addView(addEv)
+        addReminderControls(root)
         val reportsTitle = TextView(this).apply {
             text = "Báo cáo giao thông (lưu offline trên điện thoại)"
             textSize = 18f
@@ -134,6 +148,11 @@ class MainActivity : Activity() {
         refreshPreview()
         refreshEvents()
         refreshReports()
+        try {
+            EventReminderScheduler.refresh(this)
+        } catch (e: Exception) {
+            logErr("MainActivity:reminderRefresh", e)
+        }
     }
 
     // ---------- Phase 5: centralized phone configuration ----------
@@ -429,6 +448,22 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == reqNotifications) {
+            val desired = pendingReminderSettings
+            pendingReminderSettings = null
+            if (desired != null && EventReminderScheduler.permissionGranted(this)) {
+                try {
+                    EventReminderScheduler.save(this, desired)
+                    Toast.makeText(this, "Đã bật nhắc lịch cá nhân.",
+                        Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    logErr("MainActivity:reminderPermission", e)
+                }
+            } else Toast.makeText(this,
+                "Chưa được cấp quyền thông báo; nhắc lịch vẫn tắt.",
+                Toast.LENGTH_LONG).show()
+            return
+        }
         if (requestCode != reqLocation) return
         val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val msg = if (fine) {
@@ -439,40 +474,131 @@ class MainActivity : Activity() {
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
     }
 
-    // ---------- sự kiện ----------
+    // ---------- Phase 7: Lịch Âm/Dương, chỉnh sửa và nhắc lịch ----------
+    private fun addReminderControls(root: LinearLayout) {
+        root.addView(TextView(this).apply {
+            text = "Nhắc lịch cá nhân (offline, mặc định tắt)"
+            textSize = 18f
+            setPadding(0, pad / 2, 0, 0)
+        })
+        root.addView(TextView(this).apply {
+            text = "Dự kiến khoảng 09:00 theo giờ điện thoại; Android có thể giao thông báo muộn " +
+                "do tiết kiệm pin. Không tự gửi lịch hoặc vị trí lên mạng."
+            textSize = 13f
+        })
+        val current = EventReminderScheduler.read(this)
+        val enabled = CheckBox(this).apply {
+            text = "Bật thông báo nhắc sự kiện"
+            isChecked = current.enabled
+        }
+        val holidays = CheckBox(this).apply {
+            text = "Nhắc thêm ngày lễ mặc định (không bao gồm Mùng một/Rằm hàng tháng)"
+            isChecked = current.includeHolidays
+        }
+        val options = listOf(0, 1, 3, 7)
+        val advance = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Chỉ ngày diễn ra", "Trước 1 ngày và ngày diễn ra",
+                    "Trước 3 ngày và ngày diễn ra",
+                    "Trước 7 ngày và ngày diễn ra"))
+            setSelection(options.indexOf(current.advanceDays).coerceAtLeast(0))
+        }
+        root.addView(enabled)
+        root.addView(holidays)
+        root.addView(advance)
+        root.addView(Button(this).apply {
+            text = "Lưu cài đặt nhắc lịch"
+            setOnClickListener {
+                val desired = EventReminderSettings(
+                    enabled.isChecked, options[advance.selectedItemPosition],
+                    holidays.isChecked
+                )
+                if (desired.enabled && !EventReminderScheduler.permissionGranted(this@MainActivity)) {
+                    pendingReminderSettings = desired
+                    if (android.os.Build.VERSION.SDK_INT >= 33)
+                        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                            reqNotifications)
+                    else pendingReminderSettings = null
+                    return@setOnClickListener
+                }
+                try {
+                    EventReminderScheduler.save(this@MainActivity, desired)
+                    Toast.makeText(this@MainActivity, "Đã lưu cài đặt nhắc lịch.",
+                        Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    logErr("MainActivity:saveReminderSettings", e)
+                    Toast.makeText(this@MainActivity, "Không lưu được cài đặt nhắc lịch.",
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        })
+    }
 
     private fun refreshEvents() {
         eventBox.removeAllViews()
-        val list = Events.load(this)
-        if (list.isEmpty()) {
-            eventBox.addView(TextView(this).apply { text = "(chưa có sự kiện nào)" })
+        val saved = Events.load(this)
+        val today = java.time.LocalDate.now()
+        if (saved.isEmpty()) {
+            eventBox.addView(TextView(this).apply { text = "(chưa có sự kiện cá nhân)" })
             return
         }
-        for (e in list) {
+        val upcoming = saved.mapNotNull { e ->
+            Events.nextDate(e, today)?.let { e to it }
+        }.sortedBy { it.second }.take(6)
+        eventBox.addView(TextView(this).apply {
+            text = "Sắp đến: " +
+                (if (upcoming.isEmpty()) "không có" else upcoming.joinToString(" · ") {
+                    "${it.first.title.take(25)} (${it.second.dayOfMonth}/${it.second.monthValue})"
+                })
+            textSize = 13f
+        })
+        for (e in saved) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val tv = TextView(this).apply {
                 text = "• ${e.title} - ${Events.whenText(e)}"
                 textSize = 15f
             }
-            row.addView(tv, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            val del = Button(this).apply {
+            row.addView(tv, LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+            ))
+            row.addView(Button(this).apply {
+                text = "Sửa"
+                setOnClickListener { showAddDialog(e) }
+            })
+            row.addView(Button(this).apply {
                 text = "Xóa"
                 setOnClickListener {
-                    Events.save(this@MainActivity, Events.load(this@MainActivity).filter { it.id != e.id })
-                    this@MainActivity.refreshEvents()
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Xóa sự kiện?")
+                        .setMessage("Xóa ${e.title} và các nhắc lịch tương ứng?")
+                        .setNegativeButton("Hủy", null)
+                        .setPositiveButton("Xóa") { _, _ ->
+                            try {
+                                Events.save(this@MainActivity,
+                                    Events.load(this@MainActivity).filter { it.id != e.id })
+                                refreshEvents()
+                            } catch (err: Exception) {
+                                logErr("MainActivity:deleteEvent", err)
+                                Toast.makeText(this@MainActivity, "Không xóa được sự kiện.",
+                                    Toast.LENGTH_LONG).show()
+                            }
+                        }.show()
                 }
-            }
-            row.addView(del)
+            })
             eventBox.addView(row)
         }
     }
 
-    private fun showAddDialog() {
+    private fun showAddDialog(existing: CalEvent? = null) {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad / 2, pad, 0)
         }
-        val title = EditText(this).apply { hint = "Tên sự kiện (ví dụ: Giỗ Mẹ)" }
+        val title = EditText(this).apply {
+            hint = "Tên sự kiện (tối đa 100 ký tự)"
+            setText(existing?.title.orEmpty())
+        }
         val group = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         val rbSolar = RadioButton(this).apply {
             text = "Dương lịch"
@@ -484,54 +610,92 @@ class MainActivity : Activity() {
         }
         group.addView(rbSolar)
         group.addView(rbLunar)
-        group.check(rbSolar.id)
+        group.check(if (existing?.lunar == true) rbLunar.id else rbSolar.id)
         val day = EditText(this).apply {
             hint = "Ngày"
             inputType = InputType.TYPE_CLASS_NUMBER
+            setText(existing?.day?.toString().orEmpty())
         }
         val month = EditText(this).apply {
             hint = "Tháng (bỏ qua nếu lặp hằng tháng)"
             inputType = InputType.TYPE_CLASS_NUMBER
+            if (existing != null && existing.repeat != 1) setText(existing.month.toString())
         }
         val year = EditText(this).apply {
             hint = "Năm (chỉ cần khi chọn Một lần)"
             inputType = InputType.TYPE_CLASS_NUMBER
+            if (existing?.repeat == 2) setText(existing.year.toString())
         }
-        val repeat = Spinner(this)
-        repeat.adapter = ArrayAdapter(
-            this, android.R.layout.simple_spinner_dropdown_item,
-            arrayOf("Lặp hằng năm", "Lặp hằng tháng", "Một lần")
-        )
+        val repeat = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                arrayOf("Lặp hằng năm", "Lặp hằng tháng", "Một lần"))
+            setSelection(existing?.repeat?.coerceIn(0, 2) ?: 0)
+        }
+        val leap = CheckBox(this).apply {
+            text = "Tháng Âm lịch nhuận (chỉ hằng năm hoặc một lần)"
+            isChecked = existing?.leapMonth == true
+        }
         box.addView(title)
         box.addView(group)
         box.addView(day)
         box.addView(month)
         box.addView(year)
         box.addView(repeat)
+        box.addView(leap)
 
-        AlertDialog.Builder(this)
-            .setTitle("Thêm sự kiện")
-            .setView(box)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "Thêm sự kiện" else "Chỉnh sửa sự kiện")
+            .setView(ScrollView(this).apply { addView(box) })
             .setNegativeButton("Hủy", null)
-            .setPositiveButton("Lưu") { _, _ ->
-                val name = title.text.toString().trim()
+            .setPositiveButton("Lưu", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val lunar = group.checkedRadioButtonId == rbLunar.id
                 val rep = repeat.selectedItemPosition
-                val d = day.text.toString().toIntOrNull() ?: 0
-                val m = if (rep == 1) 1 else (month.text.toString().toIntOrNull() ?: 0)
-                val y = if (rep == 2) (year.text.toString().toIntOrNull() ?: 0) else 0
-                val maxDay = if (lunar) 30 else 31
-                val ok = name.isNotEmpty() && d in 1..maxDay && m in 1..12 && (rep != 2 || y >= 2000)
-                if (!ok) {
-                    Toast.makeText(this, "Thông tin chưa hợp lệ, hãy kiểm tra lại", Toast.LENGTH_LONG).show()
-                } else {
-                    val list = Events.load(this).toMutableList()
-                    list.add(CalEvent(System.currentTimeMillis(), name, lunar, d, m, y, rep))
-                    Events.save(this, list)
+                val newEvent = CalEvent(
+                    existing?.id ?: System.currentTimeMillis(),
+                    title.text.toString().trim(), lunar,
+                    day.text.toString().toIntOrNull() ?: 0,
+                    if (rep == 1) 1 else (month.text.toString().toIntOrNull() ?: 0),
+                    if (rep == 2) year.text.toString().toIntOrNull() ?: 0 else 0,
+                    rep,
+                    leapMonth = lunar && rep != 1 && leap.isChecked
+                )
+                if (!Events.validateUserEvent(newEvent)) {
+                    Toast.makeText(this@MainActivity,
+                        "Sự kiện không hợp lệ. Kiểm tra ngày, tháng nhuận và tên.",
+                        Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+                try {
+                    val list = Events.load(this@MainActivity).toMutableList()
+                    if (existing == null) {
+                        if (list.size >= 250) throw IllegalStateException("Đã đủ 250 sự kiện.")
+                        // Guard against IDs coinciding in the same millisecond.
+                        val unique = newEvent.copy(
+                            id = generateSequence(newEvent.id) { it + 1L }
+                                .first { value -> list.none { entry -> entry.id == value } }
+                        )
+                        list.add(unique)
+                    } else {
+                        val index = list.indexOfFirst { entry -> entry.id == existing.id }
+                        check(index >= 0) { "Sự kiện đã được xóa." }
+                        list[index] = newEvent
+                    }
+                    Events.save(this@MainActivity, list)
+                    dialog.dismiss()
                     refreshEvents()
+                } catch (e: Exception) {
+                    logErr("MainActivity:saveEvent", e)
+                    Toast.makeText(this@MainActivity,
+                        "Không lưu được sự kiện; dữ liệu cũ được giữ nguyên.",
+                        Toast.LENGTH_LONG).show()
                 }
             }
-            .show()
+        }
+        dialog.show()
     }
 
     // ---------- báo cáo giao thông Phase 4: lưu cục bộ ----------

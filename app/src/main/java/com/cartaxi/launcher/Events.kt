@@ -17,7 +17,8 @@ data class CalEvent(
     val month: Int,
     val year: Int,
     val repeat: Int,
-    val kind: Int = 0
+    val kind: Int = 0,
+    val leapMonth: Boolean = false
 )
 
 data class EventLine(val text: String, val countdown: String, val urgent: Boolean, val red: Boolean)
@@ -31,7 +32,8 @@ object Events {
                 val o = arr.getJSONObject(i)
                 CalEvent(
                     o.getLong("id"), o.getString("title"), o.getBoolean("lunar"),
-                    o.getInt("day"), o.getInt("month"), o.optInt("year", 0), o.optInt("repeat", 0)
+                    o.getInt("day"), o.getInt("month"), o.optInt("year", 0), o.optInt("repeat", 0),
+                    leapMonth = o.optBoolean("leapMonth", false)
                 )
             }
         } catch (e: Exception) {
@@ -43,14 +45,28 @@ object Events {
         parse(ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE).getString("events", ""))
 
     fun save(ctx: Context, list: List<CalEvent>) {
+        // Malformed legacy JSON must not be silently treated as an empty list
+        // and overwritten when users edit/delete existing events.
+        val prefs = ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+        val original = prefs.getString("events", null)
+        if (!original.isNullOrBlank()) {
+            require(runCatching { JSONArray(original) }.isSuccess) {
+                "Không thể lưu: dữ liệu sự kiện cũ bị lỗi."
+            }
+        }
+        require(list.size <= 250 && list.map { it.id }.distinct().size == list.size)
         val arr = JSONArray()
         for (e in list) {
             arr.put(
                 JSONObject().put("id", e.id).put("title", e.title).put("lunar", e.lunar)
                     .put("day", e.day).put("month", e.month).put("year", e.year).put("repeat", e.repeat)
+                    .put("leapMonth", e.leapMonth)
             )
         }
-        ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE).edit().putString("events", arr.toString()).apply()
+        check(prefs.edit().putString("events", arr.toString()).commit()) {
+            "Không lưu được dữ liệu sự kiện."
+        }
+        EventReminderScheduler.refresh(ctx)
     }
 
     private fun d(id: Long, title: String, lunar: Boolean, day: Int, month: Int, repeat: Int = 0, kind: Int = 1) =
@@ -93,15 +109,15 @@ object Events {
         }
     }
 
-    private fun lunarDate(d: Int, m: Int, y: Int): LocalDate? {
-        val s = LunarCalendar.lunarToSolar(d, m, y, false) ?: return null
+    private fun lunarDate(d: Int, m: Int, y: Int, leap: Boolean = false): LocalDate? {
+        val s = LunarCalendar.lunarToSolar(d, m, y, leap) ?: return null
         val ld = try {
             LocalDate.of(s[2], s[1], s[0])
         } catch (e: Exception) {
             return null
         }
         val back = LunarCalendar.solarToLunar(s[0], s[1], s[2])
-        if (back.day != d || back.month != m || back.leap) return null
+        if (back.day != d || back.month != m || back.leap != leap) return null
         return ld
     }
 
@@ -109,8 +125,9 @@ object Events {
         val cands = ArrayList<LocalDate>()
         val tl = LunarCalendar.solarToLunar(today.dayOfMonth, today.monthValue, today.year)
         when (e.repeat) {
-            0 -> for (dy in -1..2) {
-                val d = if (e.lunar) lunarDate(e.day, e.month, tl.year + dy)
+            0 -> for (dy in -1..12) {
+                // Some lunar leap months occur less often than every four years.
+                val d = if (e.lunar) lunarDate(e.day, e.month, tl.year + dy, e.leapMonth)
                 else solarDate(today.year + dy, e.month, e.day)
                 if (d != null) cands.add(d)
             }
@@ -118,7 +135,7 @@ object Events {
                 if (e.lunar) {
                     val mm = (tl.month - 1 + i) % 12 + 1
                     val yy = tl.year + (tl.month - 1 + i) / 12
-                    lunarDate(e.day, mm, yy)?.let { cands.add(it) }
+                    lunarDate(e.day, mm, yy, false)?.let { cands.add(it) }
                 } else {
                     val ym = YearMonth.of(today.year, today.monthValue).plusMonths(i.toLong())
                     solarDate(ym.year, ym.monthValue, e.day)?.let { cands.add(it) }
@@ -129,15 +146,40 @@ object Events {
                 if (d != null) cands.add(d.minusDays(1))
             }
             else -> {
-                val d = if (e.lunar) lunarDate(e.day, e.month, e.year) else solarDate(e.year, e.month, e.day)
+                val d = if (e.lunar) lunarDate(e.day, e.month, e.year, e.leapMonth)
+                    else solarDate(e.year, e.month, e.day)
                 if (d != null) cands.add(d)
             }
         }
         return cands.filter { !it.isBefore(today) }.minByOrNull { it.toEpochDay() }
     }
 
+    /** Validate new user edits; legacy records remain readable unchanged. */
+    fun validateUserEvent(e: CalEvent): Boolean {
+        if (e.kind != 0 || e.id <= 0L ||
+            e.title.isBlank() || e.title.length > 100 ||
+            e.day !in 1..(if (e.lunar) 30 else 31) ||
+            e.month !in 1..12 || e.repeat !in 0..2 ||
+            (!e.lunar && e.leapMonth) ||
+            (e.repeat == 1 && e.leapMonth) ||
+            (e.repeat == 2 && e.year !in 1900..2100)) return false
+        if (e.repeat == 2) {
+            if (e.lunar) {
+                if (lunarDate(e.day, e.month, e.year, e.leapMonth) == null) return false
+            } else {
+                try {
+                    LocalDate.of(e.year, e.month, e.day)
+                } catch (_: Exception) { return false }
+            }
+        } else if (e.lunar && !e.leapMonth) {
+            // One of the next 15 regular lunar years must contain this day.
+            if ((2020..2034).none { lunarDate(e.day, e.month, it) != null }) return false
+        }
+        return true
+    }
+
     fun whenText(e: CalEvent): String {
-        val al = if (e.lunar) " (ÂL)" else ""
+        val al = if (e.lunar) (if (e.leapMonth) " (ÂL nhuận)" else " (ÂL)") else ""
         return when (e.repeat) {
             1 -> "ngày ${e.day}$al hằng tháng"
             2 -> "${e.day}/${e.month}/${e.year}$al"
