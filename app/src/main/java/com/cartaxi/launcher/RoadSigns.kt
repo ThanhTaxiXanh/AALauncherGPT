@@ -91,7 +91,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     private val requestGate = OverpassRequestGate()
     private val exec = Executors.newSingleThreadExecutor()
     @Volatile private var offlineRegions: List<OfflineRegionSigns> = emptyList()
-    private var hintsLoading = false
+    @Volatile private var hintsLoading = false
     private var hintCenterLat = Double.NaN
     private var hintCenterLon = Double.NaN
 
@@ -445,8 +445,17 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             lat !in -90.0..90.0 || lon !in -180.0..180.0 ||
             radius <= 0.0 || max <= 0) return emptyList()
         val d = data
-        val live = if (cacheUsage(d, lat, lon) == SignCacheUse.LIVE) d!!.signs else emptyList()
-        val archived = nearbyArchived(lat, lon)
+        val sourceMode = cacheUsage(d, lat, lon)
+        val live = if (sourceMode == SignCacheUse.LIVE) d!!.signs else emptyList()
+        // The most recent in-memory response may have just expired, even if
+        // disk hints have not been reloaded for this stationary location.
+        val expiredLive = if (sourceMode == SignCacheUse.OFFLINE_HINT) d!!.signs.map { item ->
+            item.copy(
+                type = "offline_hint", label = "?", value = 0,
+                name = "OSM lưu offline (chưa xác minh): " + item.name
+            )
+        } else emptyList()
+        val archived = expiredLive + nearbyArchived(lat, lon)
         // Priority before sorting: verified > fresh OSM > archived hints.
         val selected = ArrayList<SignItem>(min(max, extraSigns.size + live.size + archived.size))
         for (sign in extraSigns + live + archived) {

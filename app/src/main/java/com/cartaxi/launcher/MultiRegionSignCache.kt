@@ -54,17 +54,18 @@ internal class MultiRegionSignCache(
     fun regionCount(): Int = regionFiles().size
 
     fun prune() {
-        val files = regionFiles()
         // Only the private archive directory is managed; legacyFile remains intact.
-        for (file in files) {
-            val valid = try { OfflineSignCache(file, nowMs).read() != null }
-                catch (_: Exception) { false }
-            if (!valid) file.delete()
+        val valid = ArrayList<Pair<File, Long>>()
+        for (file in regionFiles()) {
+            val snapshot = try { OfflineSignCache(file, nowMs).read() }
+                catch (_: Exception) { null }
+            if (snapshot == null) file.delete()
+            else valid.add(file to snapshot.savedAtEpochMs)
         }
-        val retained = regionFiles().sortedWith(
-            compareByDescending<File> { it.lastModified() }.thenBy { it.name }
+        val retained = valid.sortedWith(
+            compareByDescending<Pair<File, Long>> { it.second }.thenBy { it.first.name }
         )
-        for (file in retained.drop(maxRegions)) file.delete()
+        for ((file, _) in retained.drop(maxRegions)) file.delete()
     }
 
     private fun regionFiles(): List<File> =
