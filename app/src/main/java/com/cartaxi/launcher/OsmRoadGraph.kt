@@ -35,6 +35,7 @@ internal class OsmRoadGraph(
     }
 
     private data class Key(val way: Int, val segment: Int, val forward: Boolean)
+    private data class Direction(val way: Int, val forward: Boolean)
     private data class Edge(
         val key: Key, val from: Long, val to: Long, val level: Int,
         val lengthM: Double, val bearing: Double
@@ -44,7 +45,11 @@ internal class OsmRoadGraph(
     private val nodeCoordinates = HashMap<Long, Pair<Double, Double>>()
     private val conflicted = HashSet<Long>()
     private val trackedWays = HashSet<Int>()
-    private val maximumSegments = 6000
+    private val directions = HashSet<Direction>()
+    // Built once, replacing full graph scans on every GPS-confirmed junction.
+    private val arriving = HashMap<Direction, MutableSet<Long>>()
+    private val departing = HashMap<Direction, MutableSet<Long>>()
+    private val maximumSegments = 24_000
     private val maxHops = 60
 
     init {
@@ -89,11 +94,15 @@ internal class OsmRoadGraph(
 
     fun containsWay(wayIndex: Int): Boolean = wayIndex in trackedWays
 
-    /** A GPS way/direction must be actually drivable under OSM oneway tags. */
+    /** Constant-time directional edge existence lookup for GPS updates. */
     fun allowsTravel(match: SpeedWayMatch): Boolean =
         match.wayIndex in roads.indices &&
             roads[match.wayIndex].wayId == match.wayId &&
-            edges.keys.any { it.way == match.wayIndex && it.forward == match.forward }
+            Direction(match.wayIndex, match.forward) in directions
+
+    /** Deterministic counters for large synthetic graph regression tests. */
+    internal val segmentCount: Int get() = edges.size
+    internal val indexedWayCount: Int get() = trackedWays.size
 
     /**
      * Validate an *observed* turn from one way to another. This does not
@@ -115,13 +124,14 @@ internal class OsmRoadGraph(
         val fromWay = roads[before.wayIndex]
         val toWay = roads[after.wayIndex]
         if (fromWay.level != toWay.level) return false
-        val entering = edges.values.asSequence()
-            .filter { it.key.way == before.wayIndex && it.key.forward == before.forward }
-            .map { it.to }.toSet()
-        val exiting = edges.values.asSequence()
-            .filter { it.key.way == after.wayIndex && it.key.forward == after.forward }
-            .map { it.from }.toSet()
-        return (entering intersect exiting).any { node ->
+        val entering = arriving[Direction(before.wayIndex, before.forward)].orEmpty()
+        val exiting = departing[Direction(after.wayIndex, after.forward)].orEmpty()
+        if (entering.isEmpty() || exiting.isEmpty()) return false
+        // Probe the smaller index: cost scales with only the two matching ways.
+        val candidateNodes = if (entering.size <= exiting.size) entering else exiting
+        val otherNodes = if (entering.size <= exiting.size) exiting else entering
+        return candidateNodes.any { node ->
+            if (node !in otherNodes) return@any false
             if (node in conflicted) false
             else {
                 val loc = nodeCoordinates[node]
@@ -161,25 +171,28 @@ internal class OsmRoadGraph(
             ))
             offset += remaining
             if (offset >= maxDistanceM || edge.to in conflicted) break
-            val options = outgoing[edge.to].orEmpty().filter { next ->
-                // Never make an implicit U-turn on the segment just traveled.
-                !(next.key.way == edge.key.way &&
-                    next.key.segment == edge.key.segment &&
-                    next.key.forward != edge.key.forward)
+            // Do not allocate a filtered list at every graph hop.
+            // All exits must be checked; never invent a straight route at a fork.
+            var next: Edge? = null
+            var fork = false
+            for (possible in outgoing[edge.to].orEmpty()) {
+                if (possible.key.way == edge.key.way &&
+                    possible.key.segment == edge.key.segment &&
+                    possible.key.forward != edge.key.forward) continue
+                if (next != null) { fork = true; break }
+                next = possible
             }
-            // All possible forward exits are considered before the turn angle:
-            // do not invent a straight route at an intersection with a turn.
-            if (options.size != 1) break
-            val next = options.single()
-            if (next.level != edge.level ||
-                next.from in conflicted ||
-                next.key in seen ||
+            if (fork) break
+            val continuation = next ?: break
+            if (continuation.level != edge.level ||
+                continuation.from in conflicted ||
+                continuation.key in seen ||
                 restrictions.decision(
-                    roads[edge.key.way].wayId, edge.to, roads[next.key.way].wayId
+                    roads[edge.key.way].wayId, edge.to, roads[continuation.key.way].wayId
                 ) != TurnDecision.NO_KNOWN_RESTRICTION) break
-            val maxTurn = if (next.key.way == edge.key.way) 120.0 else 55.0
-            if (angle(edge.bearing, next.bearing) > maxTurn) break
-            edge = next
+            val maxTurn = if (continuation.key.way == edge.key.way) 120.0 else 55.0
+            if (angle(edge.bearing, continuation.bearing) > maxTurn) break
+            edge = continuation
             startFraction = if (edge.key.forward) 0.0 else 1.0
         }
         return path
@@ -188,6 +201,10 @@ internal class OsmRoadGraph(
     private fun add(edge: Edge) {
         edges[edge.key] = edge
         outgoing.getOrPut(edge.from) { ArrayList() }.add(edge)
+        val direction = Direction(edge.key.way, edge.key.forward)
+        directions.add(direction)
+        arriving.getOrPut(direction) { HashSet() }.add(edge.to)
+        departing.getOrPut(direction) { HashSet() }.add(edge.from)
     }
 
     private fun meters(a: Double, b: Double, c: Double, d: Double): Double =
