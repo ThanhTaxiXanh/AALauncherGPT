@@ -28,7 +28,7 @@ object Events {
     internal fun parseStrict(raw: String?): List<CalEvent> {
         if (raw.isNullOrBlank()) return emptyList()
         val arr = JSONArray(raw)
-            (0 until arr.length()).map { i ->
+        return (0 until arr.length()).map { i ->
                 val o = arr.getJSONObject(i)
                 CalEvent(
                     o.getLong("id"), o.getString("title"), o.getBoolean("lunar"),
