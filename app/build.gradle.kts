@@ -4,16 +4,17 @@ plugins {
 }
 
 android {
-    namespace = "com.cartaxi.launcher"
+    namespace = "Thanh.TaxiDriver.AALauncher"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.cartaxi.launcher"
+        applicationId = "Thanh.TaxiDriver.AALauncher"
         minSdk = 30
         targetSdk = 33
         // This repository has a fresh GitHub Actions run counter. Use a new
-        // monotonically higher range to avoid downgrading legacy CarTaxiLauncher APKs.
-        // Updating an installed app still requires the exact same signing certificate.
+        // monotonically higher range for this new AA Taxi Driver app identity.
+        // This package ID differs from legacy builds: it installs separately
+        // and Android does not migrate private app data automatically.
         val run = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toIntOrNull()?.coerceAtLeast(1) ?: 1
         versionCode = 100_000 + run
         versionName = "1.0.$run"

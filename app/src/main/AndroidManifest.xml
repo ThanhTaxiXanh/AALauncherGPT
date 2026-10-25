@@ -11,7 +11,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
-        android:label="CarTaxiLauncher"
+        android:label="@string/app_name"
         android:allowBackup="false">
 
         <meta-data
@@ -23,7 +23,7 @@
 
         <!-- Local Media3 playback, separate from the navigation CarAppService. -->
         <service
-            android:name=".LocalAudioService"
+            android:name=".media.LocalAudioService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
@@ -32,7 +32,7 @@
         </service>
 
         <service
-            android:name=".CarService"
+            android:name=".car.CarService"
             android:exported="true">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
@@ -41,7 +41,7 @@
         </service>
 
         <receiver
-            android:name=".EventReminderReceiver"
+            android:name=".calendar.EventReminderReceiver"
             android:enabled="true"
             android:exported="false">
             <intent-filter>
@@ -54,12 +54,12 @@
 
         <!-- Full custom multi-tile UI runs on the phone, not the Android Auto host. -->
         <activity
-            android:name=".PhoneDashboardActivity"
+            android:name=".dashboard.PhoneDashboardActivity"
             android:exported="false"
             android:screenOrientation="sensorLandscape" />
 
         <activity
-            android:name=".MainActivity"
+            android:name=".ui.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

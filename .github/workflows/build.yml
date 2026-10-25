@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       publish_release:
-        description: 'Publish a signed release with the approved private key (requires reinstall from build-71)'
+        description: 'Publish AA Taxi Driver signed release under new application ID (new separate installation)'
         required: true
         type: boolean
         default: false
@@ -36,10 +36,18 @@ jobs:
         run: gradle :app:assembleDebug --no-daemon --console=plain
       - name: Test OSM parsing, turn restrictions and GPS replay
         run: gradle :app:testDebugUnitTest --no-daemon --console=plain
+      - name: Verify AA Taxi Driver package identity and display name
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          badging=$("$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$apk")
+          printf '%s\n' "$badging" | grep -F "package: name='Thanh.TaxiDriver.AALauncher'"
+          printf '%s\n' "$badging" | grep -F "application-label:'AA Taxi Driver'"
       - name: Upload debug APK for testing
         uses: actions/upload-artifact@v4
         with:
-          name: AALauncherGPT-debug
+          name: AA-Taxi-Driver-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
@@ -156,7 +164,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Build ${{ github.run_number }}
+          name: AA Taxi Driver Build ${{ github.run_number }}
           files: app/build/outputs/apk/release/app-release.apk
           fail_on_unmatched_files: true
       - name: Remove temporary signing material
