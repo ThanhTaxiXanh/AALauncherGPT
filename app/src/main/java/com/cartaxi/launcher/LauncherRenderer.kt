@@ -480,39 +480,7 @@ object LauncherRenderer {
 
     // ---------- QR ----------
 
-    private fun trimWhite(src: Bitmap): Bitmap {
-        val w = src.width
-        val h = src.height
-        val px = IntArray(w * h)
-        src.getPixels(px, 0, w, 0, 0, w, h)
-        var minX = w
-        var minY = h
-        var maxX = -1
-        var maxY = -1
-        for (y in 0 until h) {
-            val row = y * w
-            for (x in 0 until w) {
-                val p = px[row + x]
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                if (r < 235 || g < 235 || b < 235) {
-                    if (x < minX) minX = x
-                    if (x > maxX) maxX = x
-                    if (y < minY) minY = y
-                    if (y > maxY) maxY = y
-                }
-            }
-        }
-        if (maxX < 0) return src
-        val m = (minOf(w, h) * 0.02f).toInt()
-        val l = maxOf(0, minX - m)
-        val t = maxOf(0, minY - m)
-        val rr = minOf(w, maxX + m + 1)
-        val bb = minOf(h, maxY + m + 1)
-        return Bitmap.createBitmap(src, l, t, rr - l, bb - t)
-    }
-
+    // Keep the imported image intact: QR quiet zones are part of the code.
     private fun loadQr(f: File?): Bitmap? {
         if (f == null || !f.exists()) {
             qrSrc = null
@@ -522,7 +490,7 @@ object LauncherRenderer {
         }
         val stamp = f.lastModified() xor f.length()
         if (stamp != qrStamp) {
-            qrSrc = BitmapFactory.decodeFile(f.path)?.let { trimWhite(it) }
+            qrSrc = BitmapFactory.decodeFile(f.path)
             qrStamp = stamp
             qrScaled = null
         }
@@ -551,7 +519,7 @@ object LauncherRenderer {
         val dw = maxOf(1, (bmp.width * scale).toInt())
         val dh = maxOf(1, (bmp.height * scale).toInt())
         if (qrScaled == null || qrScaledW != dw || qrScaledH != dh) {
-            qrScaled = Bitmap.createScaledBitmap(bmp, dw, dh, true)
+            qrScaled = Bitmap.createScaledBitmap(bmp, dw, dh, false)
             qrScaledW = dw
             qrScaledH = dh
         }
