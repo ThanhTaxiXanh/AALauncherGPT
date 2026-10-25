@@ -52,6 +52,12 @@
             </intent-filter>
         </receiver>
 
+        <!-- Full custom multi-tile UI runs on the phone, not the Android Auto host. -->
+        <activity
+            android:name=".PhoneDashboardActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">

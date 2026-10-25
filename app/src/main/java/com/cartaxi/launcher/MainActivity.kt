@@ -116,6 +116,17 @@ class MainActivity : Activity() {
 
         root.addView(title)
         root.addView(preview)
+        root.addView(Button(this).apply {
+            text = "Mở Custom Dashboard đa ô (điện thoại)"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, PhoneDashboardActivity::class.java))
+            }
+        })
+        root.addView(TextView(this).apply {
+            text = "Dashboard tùy chỉnh chỉ chạy trên điện thoại Android. " +
+                "Nếu đang lái xe, không chỉnh sửa bố cục hoặc chạm màn hình."
+            textSize = 13f
+        })
         root.addView(pick)
         qrBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(qrBox)

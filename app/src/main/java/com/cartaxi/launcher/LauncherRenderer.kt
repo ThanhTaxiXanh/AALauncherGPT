@@ -31,7 +31,7 @@ data class UiState(
     val settings: DashboardSettings = DashboardSettings()
 )
 
-object LauncherRenderer {
+class LauncherRenderer {
     const val ICON_COUNT = 6
 
     private val BG = Color.rgb(11, 16, 24)

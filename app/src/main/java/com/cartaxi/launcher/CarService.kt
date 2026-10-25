@@ -209,10 +209,9 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 Lifecycle.Event.ON_DESTROY -> {
                     surfaceState.onDestroy()
                     stopUpdates()
-                    maps.stop()
+                    maps.dispose()
                     surface?.release()
                     surface = null
-                    maps.onFrame = {}
                 }
                 else -> Unit
             }

@@ -181,6 +181,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
 
     fun running(): Boolean = vd != null
 
+    /** Explicit phone/car map recenter command; preserves driving camera controls. */
+    fun recenterMap() { recenter() }
+
     fun setGnss(used: Int, cn0: Double) {
         satUsed = used
         gps.used = used
@@ -270,6 +273,17 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         filteredGpsLon = Double.NaN
         snapped = false
         if (perfDebug) performance.reset(SystemClock.elapsedRealtime())
+    }
+
+    /**
+     * Final owner teardown, distinct from stop() which supports resume.
+     * Releasing executors prevents one background thread per recreated Activity.
+     */
+    fun dispose() {
+        stop()
+        onFrame = null
+        reportWorker.shutdownNow()
+        signs.close()
     }
 
     // ---------- khung hình ----------

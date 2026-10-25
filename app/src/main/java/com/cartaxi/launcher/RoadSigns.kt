@@ -115,6 +115,11 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     // Disk data is loaded asynchronously only near the current GPS position;
     // startup does not parse every region into memory.
 
+    /** Release the background executor when its owning NativeMap is destroyed. */
+    fun close() {
+        exec.shutdownNow()
+    }
+
     // ---------- tải dữ liệu ----------
 
     fun request(lat: Double, lon: Double) {
