@@ -6,6 +6,7 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Conservative along-way warnings; not a navigation router. Only signs
@@ -76,7 +77,7 @@ internal object RoadSignRouteMatcher {
             return winner
         }
 
-        fun node(index: Int, travelForward: Boolean): Projection? {
+        fun node(index: Int): Projection? {
             if (index !in 0 until count || count < 2) return null
             val segment = if (index == count - 1) index - 1 else index
             val dx = x[segment + 1] - x[segment]
@@ -106,6 +107,7 @@ internal object RoadSignRouteMatcher {
         if (road.wayId != match.wayId || road.points.size < 4) return emptyList()
 
         val route = RouteLine(road, lat, lon)
+        val rivals by lazy { roads.filter { it.wayId != road.wayId }.map { RouteLine(it, lat, lon) } }
         val car = route.projectPoint(0.0, 0.0) ?: return emptyList()
         if (car.distanceM > min(25.0, max(8.0, accuracyM * 1.5 + 2.0))) return emptyList()
         val carBearing = if (match.forward) car.forwardBearing else norm(car.forwardBearing + 180.0)
@@ -131,16 +133,14 @@ internal object RoadSignRouteMatcher {
 
             val projection = if (idx >= 0) {
                 if (route.nodeDistance(idx, sign.lat, sign.lon, lat, lon) > MAX_SIGN_OFFSET_M) continue
-                route.node(idx, match.forward)
+                route.node(idx)
             } else route.project(sign.lat, sign.lon, lat, lon)
             if (projection == null || projection.distanceM > MAX_SIGN_OFFSET_M) continue
             if (idx < 0) {
                 // Geometry-only attachment must be unique across OSM ways.
                 var ambiguous = false
-                for (other in roads) {
-                    if (other.wayId == road.wayId) continue
-                    val otherProjection = RouteLine(other, lat, lon)
-                        .project(sign.lat, sign.lon, lat, lon) ?: continue
+                for (other in rivals) {
+                    val otherProjection = other.project(sign.lat, sign.lon, lat, lon) ?: continue
                     if (otherProjection.distanceM <= MAX_SIGN_OFFSET_M &&
                         otherProjection.distanceM <= projection.distanceM + 5.0) {
                         ambiguous = true
@@ -152,7 +152,7 @@ internal object RoadSignRouteMatcher {
             val along = if (match.forward) projection.alongM - car.alongM
                 else car.alongM - projection.alongM
             if (along < MIN_LOOKAHEAD_M || along > MAX_LOOKAHEAD_M) continue
-            if (sign.wayDirection != null && sign.wayDirection != if (match.forward) 1 else -1)
+            if (sign.wayDirection != null && sign.wayDirection != (if (match.forward) 1 else -1))
                 continue
             val atSignBearing = if (match.forward) projection.forwardBearing
                 else norm(projection.forwardBearing + 180.0)
@@ -167,7 +167,7 @@ internal object RoadSignRouteMatcher {
                 // their legal applicability cannot be established.
                 continue
             }
-            val rounded = along.toInt().coerceAtLeast(1)
+            val rounded = along.roundToInt().coerceAtLeast(1)
             // Deduplicate only the same sign ID (or almost identical sign
             // position/type/value), never simply signs of the same type.
             if (candidate.any { earlier ->
