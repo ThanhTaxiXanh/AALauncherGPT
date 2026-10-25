@@ -25,7 +25,7 @@ instrumented Android Auto or real-phone certification.
 | P1 | Events persistence | `Events.parse()` turned any malformed event item into an empty list, while `save()` only validated outer JSON array. A syntactically valid array containing one broken record could therefore be overwritten by subsequent edits | FIXED: strict parser required for existing content before save, while read-only calendar displays remain tolerant |
 | P1 | QR consistency | `index.json` and `qr.png` were updated independently; crashes/write failures could leave the displayed QR inconsistent with the selected catalog item | IMPROVED: reconciliation on first validated catalog read after restart and rollback attempts after write errors |
 | P1 | Road graph/GPS/UI workload | NativeMap executes GPS filtering, tile-road queries, multiple sign operations, and map callbacks on the main thread; creates frames through VirtualDisplay/ImageReader | DEFERRED: on-device profiling and optimization were explicitly postponed |
-| P1 | Android Auto UX | Several custom calendar/QR/sign widgets are painted inside the navigation surface; compliance and driver-distraction acceptance cannot be demonstrated by unit tests | RELEASE GATE: validate with Android Auto DHU/host and current permitted templates; do not assume certification |
+| **P0 release blocker** | Android Auto navigation category | App declares `androidx.car.app.category.NAVIGATION`, but repository does not implement full turn-by-turn navigation (NF-1), while QR/calendar/other custom widgets are drawn on the `NavigationTemplate` surface (NF-2). Unit tests cannot establish car-app policy compliance. | **NOT FIXED:** before official Android Auto publication, implement a compliant navigation experience and restrict the navigation surface, or revise the product scope/category as supported. See official criteria: https://developer.android.com/docs/quality-guidelines/car-app-quality |
 | P1 | Release signing | Publish job is opt-in and requires secrets, approved fingerprint, and a signed release; main CI currently verifies only debug APK | RELEASE GATE: verify approved signer and install/upgrade path before Phase 11 release |
 | P2 | Architecture | MainActivity, NativeMap, LauncherRenderer, RoadSigns and CarService remain large modules with mixed responsibilities | PLANNED: isolate repositories/view controllers and external/network interfaces incrementally |
 | P2 | Test coverage | JVM tests cover parsing, GPS replay and policy logic, not actual MapLibre canvas, Media3 playback, notifications, Android Auto host lifecycle, phone touch events | PLANNED: instrumentation tests, DHU/real-device matrix and lifecycle checks |
@@ -66,3 +66,19 @@ instrumented Android Auto or real-phone certification.
 
 This document is a triaged backlog, not a claim that all P1/P2 items are
 fixed or that the APK has passed automotive certification.
+
+## Policy-specific release warning
+
+Official Android for Cars quality guidance (September 2026) identifies
+NF-1 (navigation must provide turn-by-turn directions) and NF-2 (the
+navigation map surface may draw map content and driving-relevant
+annotations, not arbitrary non-navigation panels). As currently
+implemented, the `NAVIGATION` category and QR/calendar tiles need an
+architectural compliance decision **before** Phase 11 declares the
+Android Auto build release-ready. A green debug build is not proof of
+Google Play acceptance or automotive host certification.
+
+- https://developer.android.com/docs/quality-guidelines/car-app-quality
+- https://developer.android.com/reference/androidx/car/app/CarAppService
+- https://openfreemap.org/ (attribution required)
+- https://osmfoundation.org/wiki/Attribution_Guidelines
