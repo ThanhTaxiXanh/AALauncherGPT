@@ -59,7 +59,16 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 "motorway_link|trunk_link|primary_link|secondary_link|tertiary_link"
     }
 
-    private class Way(val highway: String, val all: Int?, val fwd: Int?, val bwd: Int?, val pts: DoubleArray)
+    private class Way(
+        val highway: String,
+        val all: Int?,
+        val fwd: Int?,
+        val bwd: Int?,
+        val allConditional: String?,
+        val fwdConditional: String?,
+        val bwdConditional: String?,
+        val pts: DoubleArray
+    )
     private class Data(
         val lat: Double,
         val lon: Double,
@@ -222,6 +231,9 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                         parseSpeed(tg.str("maxspeed")),
                         parseSpeed(tg.str("maxspeed:forward")),
                         parseSpeed(tg.str("maxspeed:backward")),
+                        tg.str("maxspeed:conditional"),
+                        tg.str("maxspeed:forward:conditional"),
+                        tg.str("maxspeed:backward:conditional"),
                         pts
                     )
                 )
@@ -423,8 +435,26 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         if (w != null) {
             lastWay = w
             // Opposite-direction tags and generic highway types are not valid legal speed limits.
-            val explicit = if (!moving || !heading.isFinite()) w.all
-                else if (bestFwd) (w.fwd ?: w.all) else (w.bwd ?: w.all)
+            // Never substitute the base limit when a conditional tag is present
+            // but uses unsupported syntax (weather, holiday, school hours, etc.).
+            // OSM conditional schedules are interpreted in Vietnamese civil time.
+            val wallTimeMs = System.currentTimeMillis()
+            val explicit = when {
+                !moving || !heading.isFinite() -> {
+                    if (w.fwdConditional != null || w.bwdConditional != null) null
+                    else ConditionalSpeedLimit.resolve(w.all, w.allConditional, wallTimeMs)
+                }
+                bestFwd -> ConditionalSpeedLimit.resolve(
+                    w.fwd ?: w.all,
+                    w.fwdConditional ?: w.allConditional,
+                    wallTimeMs
+                )
+                else -> ConditionalSpeedLimit.resolve(
+                    w.bwd ?: w.all,
+                    w.bwdConditional ?: w.allConditional,
+                    wallTimeMs
+                )
+            }
             if (explicit != null) commit(explicit, false, now)
             else { shown = null; pendV = null; pendN = 0 }
         } else {
@@ -463,7 +493,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             !usable -> "Chưa có dữ liệu đường cập nhật"
             d!!.ways.isEmpty() -> "OSM chưa có dữ liệu đường tại đây"
             shown == null && d.signs.isEmpty() && extraSigns.isEmpty() -> "OSM thiếu tốc độ và biển báo khu vực này"
-            shown == null -> "Đường chưa có maxspeed / không khớp GPS"
+            shown == null -> "Giới hạn không xác định / điều kiện chưa xác minh"
             else -> "Giới hạn từ OSM (tham khảo)"
         }
         return SignsState(shown, shownEst, ups, status)
