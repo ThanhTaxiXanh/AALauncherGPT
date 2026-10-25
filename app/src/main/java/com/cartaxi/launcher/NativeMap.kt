@@ -119,6 +119,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var smKmh = 0.0
     private var fixMs = 0L
     private var lastAccuracyM = Double.POSITIVE_INFINITY
+    private var filteredGpsLat = Double.NaN
+    private var filteredGpsLon = Double.NaN
     private var lastRawLat = 0.0
     private var lastRawLon = 0.0
     private var anchorLat = 0.0
@@ -253,6 +255,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         segs.clear()
         roadMatcher.reset()
         lastAccuracyM = Double.POSITIVE_INFINITY
+        filteredGpsLat = Double.NaN
+        filteredGpsLon = Double.NaN
         snapped = false
         if (perfDebug) performance.reset(SystemClock.elapsedRealtime())
     }
@@ -473,6 +477,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         lastAccuracyM = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.POSITIVE_INFINITY
 
         val fx = gps.update(loc, now)
+        filteredGpsLat = fx.lat
+        filteredGpsLon = fx.lon
         val sp = fx.speed.toFloat()
         moving = if (fx.stationary) false else if (moving) sp > 0.9f else sp > 2.0f
         speedMs = if (moving) sp else 0f
@@ -704,7 +710,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         if (!hasFix) return
         try {
             signs.request(tLat, tLon)
-            signsState = signs.state(tLat, tLon, tHeading, moving)
+            signsState = signs.state(
+                filteredGpsLat, filteredGpsLon, tHeading, moving, lastAccuracyM
+            )
             val near = signs.nearby(tLat, tLon, 600.0, 60)
             // Include sign type, label and limit: the same node can change meaning after refresh.
             // Check the style/source before comparing to avoid suppressing the first render.

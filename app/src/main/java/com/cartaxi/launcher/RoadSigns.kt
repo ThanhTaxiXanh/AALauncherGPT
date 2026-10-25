@@ -32,7 +32,9 @@ data class SignsState(
     val limit: Int?,
     val estimated: Boolean,
     val upcoming: List<UpcomingSign>,
-    val status: String
+    val status: String,
+    /** OSM way ID of the speed-limit source, not a lane identifier. */
+    val roadWayId: Long? = null
 ) {
     companion object {
         val EMPTY = SignsState(null, false, emptyList(), "Đang chờ vị trí")
@@ -60,19 +62,20 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     }
 
     private class Way(
+        val geometry: SpeedWayGeometry,
         val highway: String,
         val all: Int?,
         val fwd: Int?,
         val bwd: Int?,
         val allConditional: String?,
         val fwdConditional: String?,
-        val bwdConditional: String?,
-        val pts: DoubleArray
+        val bwdConditional: String?
     )
     private class Data(
         val lat: Double,
         val lon: Double,
         val ways: List<Way>,
+        val geometries: List<SpeedWayGeometry>,
         val signs: List<SignItem>,
         val timeMs: Long,
         val stale: Boolean
@@ -85,7 +88,8 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     private var lastTry = -100000L
     private val exec = Executors.newSingleThreadExecutor()
 
-    private var lastWay: Way? = null
+    private val speedWayMatcher = SpeedWayMatcher()
+    private var lastWayId: Long? = null
     private var lastData: Data? = null
     private val extraSigns: List<SignItem> = parseOpenGeoJson(supplementalGeoJson)
     private var shown: Int? = null
@@ -225,16 +229,24 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                     pts[2 * j] = p.getDouble("lat")
                     pts[2 * j + 1] = p.getDouble("lon")
                 }
+                val wayId = e.optLong("id", -1L)
+                // A missing way ID cannot support road-specific speed reporting.
+                if (wayId <= 0L) continue
+                val roadLevel = tg.str("layer")?.toIntOrNull() ?: when {
+                    tg.str("bridge") == "yes" -> 1
+                    tg.str("tunnel") == "yes" -> -1
+                    else -> 0
+                }
                 ways.add(
                     Way(
+                        SpeedWayGeometry(wayId, roadLevel, pts),
                         hw,
                         parseSpeed(tg.str("maxspeed")),
                         parseSpeed(tg.str("maxspeed:forward")),
                         parseSpeed(tg.str("maxspeed:backward")),
                         tg.str("maxspeed:conditional"),
                         tg.str("maxspeed:forward:conditional"),
-                        tg.str("maxspeed:backward:conditional"),
-                        pts
+                        tg.str("maxspeed:backward:conditional")
                     )
                 )
             } else if (e.optString("type") == "node") {
@@ -244,7 +256,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 }
             }
         }
-        return Data(lat, lon, ways, signs, now, stale)
+        return Data(lat, lon, ways, ways.map { it.geometry }, signs, now, stale)
     }
 
     // OSM direction=* describes the way the sign physically faces. A driver
@@ -372,13 +384,14 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         }
     }
 
-    /** Gọi mỗi giây. heading = hướng đi hiện tại (độ). */
-    fun state(lat: Double, lon: Double, heading: Double, moving: Boolean): SignsState {
+    /** One update per second; accuracyM is horizontal GPS uncertainty in metres. */
+    fun state(lat: Double, lon: Double, heading: Double, moving: Boolean, accuracyM: Double): SignsState {
         val d = data
         val now = SystemClock.elapsedRealtime()
         if (d != null && d !== lastData) {
             lastData = d
-            lastWay = null
+            lastWayId = null
+            speedWayMatcher.reset()
             shown = null
             pendV = null
             pendN = 0
@@ -386,83 +399,51 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val usable = d != null && !d.stale && dist(lat, lon, d.lat, d.lon) <= MAX_DATA_DISTANCE_M && now - d.timeMs <= MAX_AGE_MS
         if (!usable) {
             shown = null
-            lastWay = null
+            lastWayId = null
+            speedWayMatcher.reset()
             pendV = null
             pendN = 0
         }
         val kx = 111320.0 * cos(Math.toRadians(lat))
         val ky = 111320.0
 
-        // 1) đoạn đường đang chạy -> giới hạn tốc độ
-        var bestScore = 1e9
-        var bestWay: Way? = null
-        var bestFwd = true
-        for (w in if (usable) d!!.ways else emptyList()) {
-            val p = w.pts
-            val n = p.size / 2
-            for (i in 0 until n - 1) {
-                val ax = (p[2 * i + 1] - lon) * kx
-                val ay = (p[2 * i] - lat) * ky
-                val bx = (p[2 * i + 3] - lon) * kx
-                val by = (p[2 * i + 2] - lat) * ky
-                if ((ax > 30 && bx > 30) || (ax < -30 && bx < -30) || (ay > 30 && by > 30) || (ay < -30 && by < -30)) continue
-                val dx = bx - ax
-                val dy = by - ay
-                val len2 = dx * dx + dy * dy
-                if (len2 < 0.01) continue
-                val t = (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
-                val px = ax + t * dx
-                val py = ay + t * dy
-                val dd = sqrt(px * px + py * py)
-                if (dd > 25.0) continue
-                val segB = (Math.toDegrees(atan2(dx, dy)) + 360.0) % 360.0
-                val a0 = angDiff(segB, heading)
-                var score = dd
-                if (moving && heading.isFinite()) {
-                    val a = min(a0, 180.0 - a0)
-                    if (a > 45.0) continue
-                    score += 0.25 * a
-                }
-                if (w === lastWay) score -= 5.0
-                if (score < bestScore) {
-                    bestScore = score
-                    bestWay = w
-                    bestFwd = a0 <= 90.0
-                }
-            }
-        }
-        val w = bestWay
+        // 1) Match an OSM way using filtered GPS and its reported accuracy.
+        // Ambiguous parallel, crossing or stacked roads produce an unknown limit.
+        val match = if (usable) speedWayMatcher.match(
+            lat, lon, heading, moving, accuracyM, d!!.geometries
+        ) else null
+        val w = match?.let { d!!.ways[it.wayIndex] }
         if (w != null) {
-            lastWay = w
-            // Opposite-direction tags and generic highway types are not valid legal speed limits.
-            // Never substitute the base limit when a conditional tag is present
-            // but uses unsupported syntax (weather, holiday, school hours, etc.).
-            // OSM conditional schedules are interpreted in Vietnamese civil time.
+            val selected = match!!
+            // Never carry a previous road's limit onto a new way.
+            if (lastWayId != selected.wayId) {
+                shown = null
+                pendV = null
+                pendN = 0
+                lastWayId = selected.wayId
+            }
             val wallTimeMs = System.currentTimeMillis()
             val explicit = when {
                 !moving || !heading.isFinite() -> {
-                    if (w.fwdConditional != null || w.bwdConditional != null) null
-                    else ConditionalSpeedLimit.resolve(w.all, w.allConditional, wallTimeMs)
+                    if (w.fwdConditional != null || w.bwdConditional != null ||
+                        w.fwd != null || w.bwd != null
+                    ) null else ConditionalSpeedLimit.resolve(w.all, w.allConditional, wallTimeMs)
                 }
-                bestFwd -> ConditionalSpeedLimit.resolve(
-                    w.fwd ?: w.all,
-                    w.fwdConditional ?: w.allConditional,
-                    wallTimeMs
+                selected.forward -> ConditionalSpeedLimit.resolve(
+                    w.fwd ?: w.all, w.fwdConditional ?: w.allConditional, wallTimeMs
                 )
                 else -> ConditionalSpeedLimit.resolve(
-                    w.bwd ?: w.all,
-                    w.bwdConditional ?: w.allConditional,
-                    wallTimeMs
+                    w.bwd ?: w.all, w.bwdConditional ?: w.allConditional, wallTimeMs
                 )
             }
             if (explicit != null) commit(explicit, false, now)
             else { shown = null; pendV = null; pendN = 0 }
         } else {
-            // Clear the previous road's value if road matching fails.
             shown = null
-            lastWay = null
+            lastWayId = null
             pendV = null
             pendN = 0
+            speedWayMatcher.reset()
         }
 
         // 2) biển báo phía trước (trong nón 30° trước mũi xe, tối đa 350 m)
@@ -493,9 +474,10 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             !usable -> "Chưa có dữ liệu đường cập nhật"
             d!!.ways.isEmpty() -> "OSM chưa có dữ liệu đường tại đây"
             shown == null && d.signs.isEmpty() && extraSigns.isEmpty() -> "OSM thiếu tốc độ và biển báo khu vực này"
+            shown == null && w == null -> "Chưa khớp chắc chắn đoạn đường OSM"
             shown == null -> "Giới hạn không xác định / điều kiện chưa xác minh"
             else -> "Giới hạn từ OSM (tham khảo)"
         }
-        return SignsState(shown, shownEst, ups, status)
+        return SignsState(shown, shownEst, ups, status, if (shown != null) match?.wayId else null)
     }
 }
