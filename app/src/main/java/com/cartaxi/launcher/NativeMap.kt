@@ -101,7 +101,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var arrow: ArrowView? = null
     private var arrowNominal = 48
     private var arrowView = 80
-    private var blocked = false
+    private val startRetry = MapStartRetry()
 
     // camera / người dùng
     private var tilt = 60.0
@@ -136,7 +136,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var dZoom = 18.0
     private var lastFrameMs = 0L
 
-    // đường để hút vào làn
+    // Đoạn đường phục vụ map matching; GPS phổ thông không định vị được làn.
     private val segs = ArrayList<DoubleArray>()
     private var segCenterLat = 0.0
     private var segCenterLon = 0.0
@@ -172,7 +172,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     // ---------- vòng đời ----------
 
     fun start(w: Int, h: Int) {
-        if (vd != null || blocked) return
+        if (vd != null || !startRetry.canAttempt(SystemClock.elapsedRealtime())) return
         val vw = maxOf(64, w / 2 * 2)
         val vh = maxOf(64, h / 2 * 2)
         try {
@@ -187,7 +187,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             if (d == null) {
                 r.close()
                 status = "Không tạo được màn hình ảo"
-                blocked = true
+                startRetry.recordFailure(SystemClock.elapsedRealtime())
                 return
             }
             reader = r
@@ -201,9 +201,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             p.show()
             p.mapView?.onStart()
             p.mapView?.onResume()
+            startRetry.recordSuccess()
         } catch (t: Throwable) {
             status = "Lỗi bản đồ: " + t.message
-            blocked = true
+            startRetry.recordFailure(SystemClock.elapsedRealtime())
             stop()
         }
     }
@@ -484,7 +485,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         fixMs = now
         if (moving) {
             val s = snap(fx.lat, fx.lon, hd)
-            if (s != null) snapped = true
+            snapped = s != null
             tLat = s?.lat ?: fx.lat
             tLon = s?.lon ?: fx.lon
             val cand = when {
@@ -496,7 +497,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
     }
 
-    // ---------- hút vào làn đường ----------
+    // ---------- khớp vị trí GPS với trục đường ----------
 
     private fun ensureRoads(lat: Double, lon: Double) {
         val now = SystemClock.elapsedRealtime()
@@ -552,7 +553,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         var bx = 0.0
         var by = 0.0
         var bBearing = 0.0
-        var bOneway = 0.0
         var bA = Double.NaN
         var bB = Double.NaN
         var found = false
@@ -581,7 +581,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 bx = px
                 by = py
                 bBearing = segB
-                bOneway = s[4]
                 bA = s[0]
                 bB = s[1]
                 found = true
@@ -593,11 +592,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         var tb = bBearing
         if (angDiff(tb, ref) > 90.0) tb += 180.0
         tb = ((tb % 360.0) + 360.0) % 360.0
-        if (bOneway == 0.0) {
-            val br = Math.toRadians(tb + 90.0)
-            bx += sin(br) * 1.6
-            by += cos(br) * 1.6
-        }
+        // GPS cannot identify the occupied lane; never shift the marker sideways.
         return SnapPoint(lat + by / ky, lon + bx / kx, if (hd.isNaN()) Double.NaN else tb)
     }
 
