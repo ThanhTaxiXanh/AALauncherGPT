@@ -102,14 +102,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private val startRetry = MapStartRetry()
 
     // camera / người dùng
-    private var tilt = 60.0
-    private var following = true
-    private var lastTouchMs = 0L
-    private var lastScaleMs = 0L
-    private var userZoom: Double? = null
-    private var userZoomMs = 0L
-    private var manualZoom = 17.0
-    private var swipeRotateMode = false
+    private val cameraController = DrivingCameraController()
     private var swipeRotateBtn: TextView? = null
     private var tiltBtn: TextView? = null
 
@@ -192,7 +185,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             vd = d
             frameW = vw
             frameH = vh
-            following = true
+            cameraController.onSurfaceStarted()
             status = "Đang tải bản đồ..."
             val p = MapPresentation(appCtx, d.display)
             pres = p
@@ -291,11 +284,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     private fun leaveFollow() {
-        if (following) {
-            following = false
-            manualZoom = (map?.cameraPosition?.zoom ?: dZoom).coerceIn(3.0, 20.0)
-        }
-        lastTouchMs = SystemClock.elapsedRealtime()
+        cameraController.leaveFollow(SystemClock.elapsedRealtime())
     }
 
     private fun panByScreen(dx: Float, dy: Float, animate: Boolean) {
@@ -314,9 +303,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     fun scrollBy(dx: Float, dy: Float) {
         val m = map ?: return
         val now = SystemClock.elapsedRealtime()
-        if (now - lastScaleMs < 350L) return
+        if (!cameraController.canScroll(now)) return
         if (!dx.isFinite() || !dy.isFinite() || abs(dx) > 400f || abs(dy) > 400f) return
-        if (swipeRotateMode) {
+        if (cameraController.swipeRotateMode) {
             // Android Auto reports scroll deltas but no individual pointer
             // coordinates. In rotate mode, a horizontal swipe controls bearing.
             if (abs(dx) <= 0.2f) return
@@ -331,9 +320,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     fun fling(vx: Float, vy: Float) {
-        if (map == null || swipeRotateMode) return
+        if (map == null) return
         val now = SystemClock.elapsedRealtime()
-        if (now - lastScaleMs < 600L) return
+        if (!cameraController.canFling(now)) return
         leaveFollow()
         panByScreen(-vx * 0.12f, -vy * 0.12f, true)
     }
@@ -342,28 +331,23 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         val m = map ?: return
         if (scale.isNaN() || scale < 0.2f || scale > 5f) return
         val now = SystemClock.elapsedRealtime()
-        lastScaleMs = now
+        cameraController.scaled(now)
         val dz = (ln(scale.toDouble()) / ln(2.0)).coerceIn(-0.25, 0.25)
-        if (following) {
-            val base = userZoom ?: dZoom
+        if (cameraController.following) {
+            val base = cameraController.temporaryZoom(now) ?: dZoom
             val z = (base + dz).coerceIn(3.0, 20.0)
-            userZoom = z
-            userZoomMs = now
+            cameraController.setTemporaryZoom(z, now)
             dZoom = z
         } else {
             val pos = m.cameraPosition
             val z = (pos.zoom + dz).coerceIn(3.0, 20.0)
-            manualZoom = z
-            lastTouchMs = now
             m.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).zoom(z).build()))
         }
     }
 
     private fun recenter() {
-        swipeRotateMode = false
+        cameraController.recenter()
         swipeRotateBtn?.text = "↻"
-        following = true
-        userZoom = null
         if (smKmh.isNaN()) smKmh = 0.0
         dZoom = autoZoom(smKmh)
         val m = map ?: return
@@ -372,7 +356,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 CameraPosition.Builder()
                     .target(LatLng(dLat, dLon))
                     .zoom(dZoom)
-                    .tilt(tilt)
+                    .tilt(cameraController.tiltDegrees)
                     .bearing(dHeading)
                     .build()
             )
@@ -380,9 +364,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     private fun toggleSwipeRotate() {
-        swipeRotateMode = !swipeRotateMode
-        swipeRotateBtn?.text = if (swipeRotateMode) "XOAY" else "↻"
-        if (swipeRotateMode) leaveFollow() else lastTouchMs = SystemClock.elapsedRealtime()
+        cameraController.toggleSwipeRotate(SystemClock.elapsedRealtime())
+        swipeRotateBtn?.text = if (cameraController.swipeRotateMode) "XOAY" else "↻"
     }
 
     // Android Auto SurfaceCallback does not expose raw two-pointer rotation.
@@ -401,22 +384,28 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     }
 
     private fun toggleTilt() {
-        tilt = if (tilt > 0.0) 0.0 else 60.0
-        tiltBtn?.text = if (tilt > 0.0) "3D" else "2D"
+        cameraController.toggleTilt()
+        tiltBtn?.text = if (cameraController.tiltDegrees > 0.0) "3D" else "2D"
+        // Changing 2D/3D during manual pan must not recenter the vehicle.
+        if (!cameraController.following) {
+            map?.let { m ->
+                m.moveCamera(CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder(m.cameraPosition).tilt(cameraController.tiltDegrees).build()
+                ))
+            }
+        }
     }
 
     private fun zoomButton(delta: Double) {
         val now = SystemClock.elapsedRealtime()
-        if (following) {
-            val base = userZoom ?: dZoom
-            userZoom = (base + delta).coerceIn(3.0, 20.0)
-            userZoomMs = now
+        if (cameraController.following) {
+            val base = cameraController.temporaryZoom(now) ?: dZoom
+            cameraController.setTemporaryZoom(base + delta, now)
         } else {
             val m = map ?: return
             val pos = m.cameraPosition
             val z = (pos.zoom + delta).coerceIn(3.0, 20.0)
-            manualZoom = z
-            lastTouchMs = now
+            cameraController.touched(now)
             m.animateCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(pos).zoom(z).build()), 250)
         }
     }
@@ -603,18 +592,17 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         dHeading = (((dHeading + diff * (1.0 - exp(-dt / 0.45))) % 360.0) + 360.0) % 360.0
 
         smKmh += ((if (moving) speedMs * 3.6 else 0.0) - smKmh) * (1.0 - exp(-dt / 1.5))
-        if (userZoom != null && now - userZoomMs > 15000L) userZoom = null
-        val targetZoom = userZoom ?: autoZoom(smKmh)
+        val targetZoom = cameraController.temporaryZoom(now) ?: autoZoom(smKmh)
         dZoom += (targetZoom - dZoom) * (1.0 - exp(-dt / 0.7))
-        if (!following && now - lastTouchMs > 12000L) recenter()
+        if (cameraController.shouldRecenter(now)) recenter()
 
-        if (following) {
+        if (cameraController.following) {
             m.moveCamera(
                 CameraUpdateFactory.newCameraPosition(
                     CameraPosition.Builder()
                         .target(LatLng(dLat, dLon))
                         .zoom(dZoom)
-                        .tilt(tilt)
+                        .tilt(cameraController.tiltDegrees)
                         .bearing(dHeading)
                         .build()
                 )
@@ -635,7 +623,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         av.visibility = View.VISIBLE
         av.translationX = pt.x - arrowView / 2f
         av.translationY = pt.y - arrowView / 2f
-        av.setPose((dHeading - m.cameraPosition.bearing).toFloat(), tilt.toFloat())
+        av.setPose((dHeading - m.cameraPosition.bearing).toFloat(), m.cameraPosition.tilt.toFloat())
     }
 
     // ---------- ngày / đêm, tên đường ----------
@@ -854,7 +842,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 CameraPosition.Builder()
                     .target(LatLng(dLat, dLon))
                     .zoom(dZoom)
-                    .tilt(tilt)
+                    .tilt(cameraController.tiltDegrees)
                     .bearing(dHeading)
                     .build()
             )
@@ -1120,7 +1108,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             col.addView(b, lp)
         }
 
-        val tiltB = circle(c, "3D", size) { toggleTilt() }
+        val tiltB = circle(c, if (cameraController.tiltDegrees > 0.0) "3D" else "2D", size) { toggleTilt() }
         tiltBtn = tiltB
         add(tiltB)
         add(circle(c, "+", size) { zoomButton(1.0) })
