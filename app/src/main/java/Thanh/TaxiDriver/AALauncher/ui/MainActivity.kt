@@ -1289,13 +1289,20 @@ class MainActivity : Activity() {
     private fun saveQr(uri: Uri) {
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            // With inJustDecodeBounds=true, decodeStream returns null by design.
+            // Read dimensions from Options instead of treating null as an error.
             contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, bounds)
-            } ?: error("Không đọc được ảnh")
-            require(bounds.outWidth in 1..2600 && bounds.outHeight in 1..2600)
+            } ?: error("Không mở được tệp ảnh")
+            require(bounds.outWidth > 0 && bounds.outHeight > 0) {
+                "Định dạng ảnh không hợp lệ hoặc ảnh bị lỗi."
+            }
+            require(bounds.outWidth <= 2600 && bounds.outHeight <= 2600) {
+                "Ảnh vượt giới hạn 2600 × 2600 pixel."
+            }
             val bitmap = contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it)
-            } ?: error("Ảnh bị lỗi")
+            } ?: error("Không giải mã được ảnh")
             val stream = ByteArrayOutputStream()
             try {
                 check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
