@@ -92,8 +92,6 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var signsKey = Int.MIN_VALUE
     private val signsSrc = "ct-signs"
 
-    private class SnapPoint(val lat: Double, val lon: Double, val heading: Double)
-
     private var vd: VirtualDisplay? = null
     private var reader: ImageReader? = null
     private var pres: MapPresentation? = null
@@ -123,6 +121,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var speedMs = 0f
     private var smKmh = 0.0
     private var fixMs = 0L
+    private var lastAccuracyM = Double.POSITIVE_INFINITY
     private var lastRawLat = 0.0
     private var lastRawLon = 0.0
     private var anchorLat = 0.0
@@ -137,12 +136,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var lastFrameMs = 0L
 
     // Đoạn đường phục vụ map matching; GPS phổ thông không định vị được làn.
-    private val segs = ArrayList<DoubleArray>()
+    private val segs = ArrayList<RoadSegment>()
+    private val roadMatcher = RoadSnapMatcher()
     private var segCenterLat = 0.0
     private var segCenterLon = 0.0
     private var segMs = 0L
-    private var stickyA = Double.NaN
-    private var stickyB = Double.NaN
 
     // ngày / đêm, tên đường
     private var night = false
@@ -241,6 +239,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
         reader = null
         frame = null
+        segs.clear()
+        roadMatcher.reset()
+        lastAccuracyM = Double.POSITIVE_INFINITY
+        snapped = false
     }
 
     // ---------- khung hình ----------
@@ -445,6 +447,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
         lastRawLat = loc.latitude
         lastRawLon = loc.longitude
+        lastAccuracyM = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.POSITIVE_INFINITY
 
         val fx = gps.update(loc, now)
         val sp = fx.speed.toFloat()
@@ -514,8 +517,14 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                     null
                 } ?: continue
                 if (cls in SKIP_CLASS) continue
-                val ow = try {
-                    f.getNumberProperty("oneway")?.toInt() ?: 0
+                // Tile data may carry a layer or a bridge/tunnel hint.
+                // Without reliable vertical positioning, overlapping levels are ambiguous.
+                val roadLevel = try {
+                    f.getNumberProperty("layer")?.toInt() ?: when (f.getStringProperty("brunnel")) {
+                        "bridge" -> 1
+                        "tunnel" -> -1
+                        else -> 0
+                    }
                 } catch (e: Exception) {
                     0
                 }
@@ -530,7 +539,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                         val a = pts[i]
                         val b = pts[i + 1]
                         if (dist(lat, lon, a.latitude(), a.longitude()) > 400.0) continue
-                        segs.add(doubleArrayOf(a.latitude(), a.longitude(), b.latitude(), b.longitude(), ow.toDouble()))
+                        segs.add(RoadSegment(a.latitude(), a.longitude(), b.latitude(), b.longitude(), roadLevel))
                     }
                 }
             }
@@ -542,58 +551,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
     }
 
-    // hd = NaN: đứng yên, chỉ hút vị trí, không đổi hướng
-    private fun snap(lat: Double, lon: Double, hd: Double): SnapPoint? {
+    // Trả về null khi dữ liệu GPS hoặc hình học đường không đủ chắc chắn.
+    // NativeMap sẽ giữ vị trí GPS đã lọc thay vì ép marker lên một đường sai.
+    private fun snap(lat: Double, lon: Double, hd: Double): RoadSnapMatch? {
         ensureRoads(lat, lon)
-        if (segs.isEmpty()) return null
-        val kx = 111320.0 * cos(Math.toRadians(lat))
-        val ky = 111320.0
-        val ref = if (hd.isNaN()) tHeading else hd
-        var bestScore = 1e9
-        var bx = 0.0
-        var by = 0.0
-        var bBearing = 0.0
-        var bA = Double.NaN
-        var bB = Double.NaN
-        var found = false
-        for (s in segs) {
-            val ax = (s[1] - lon) * kx
-            val ay = (s[0] - lat) * ky
-            val cx = (s[3] - lon) * kx
-            val cy = (s[2] - lat) * ky
-            val dx = cx - ax
-            val dy = cy - ay
-            val len2 = dx * dx + dy * dy
-            if (len2 < 0.01) continue
-            val t = (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
-            val px = ax + t * dx
-            val py = ay + t * dy
-            val d = sqrt(px * px + py * py)
-            if (d > 25.0) continue
-            val segB = Math.toDegrees(atan2(dx, dy))
-            val a0 = angDiff(segB, ref)
-            val a = min(a0, 180.0 - a0)
-            if (!hd.isNaN() && a > 45.0) continue
-            var score = d + (if (hd.isNaN()) 0.0 else 0.25 * a)
-            if (s[0] == stickyA && s[1] == stickyB) score -= 5.0
-            if (score < bestScore) {
-                bestScore = score
-                bx = px
-                by = py
-                bBearing = segB
-                bA = s[0]
-                bB = s[1]
-                found = true
-            }
-        }
-        if (!found) return null
-        stickyA = bA
-        stickyB = bB
-        var tb = bBearing
-        if (angDiff(tb, ref) > 90.0) tb += 180.0
-        tb = ((tb % 360.0) + 360.0) % 360.0
-        // GPS cannot identify the occupied lane; never shift the marker sideways.
-        return SnapPoint(lat + by / ky, lon + bx / kx, if (hd.isNaN()) Double.NaN else tb)
+        return roadMatcher.match(lat, lon, hd, lastAccuracyM, segs)
     }
 
     // ---------- vòng lặp 30 khung hình / giây ----------
