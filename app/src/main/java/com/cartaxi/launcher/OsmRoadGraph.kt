@@ -16,7 +16,10 @@ import kotlin.math.hypot
  * This is NOT navigation routing and does not evaluate turn-restriction
  * relations or vehicle-specific access rules.
  */
-internal class OsmRoadGraph(private val roads: List<SpeedWayGeometry>) {
+internal class OsmRoadGraph(
+    private val roads: List<SpeedWayGeometry>,
+    private val restrictions: OsmTurnRestrictions = OsmTurnRestrictions()
+) {
     internal data class Leg(
         val wayIndex: Int,
         val segmentIndex: Int,
@@ -94,7 +97,7 @@ internal class OsmRoadGraph(private val roads: List<SpeedWayGeometry>) {
 
     /**
      * Validate an *observed* turn from one way to another. This does not
-     * authorize a future turn; OSM turn-restriction relations are not loaded.
+     * authorize a future turn; available OSM via-node restrictions are checked.
      * Require the preceding directed segment to enter a shared OSM node and
      * the new directed segment to leave it at the same level.
      */
@@ -124,7 +127,9 @@ internal class OsmRoadGraph(private val roads: List<SpeedWayGeometry>) {
                 val loc = nodeCoordinates[node]
                 loc != null &&
                     meters(beforeLat, beforeLon, loc.first, loc.second) <= nearJunctionM &&
-                    meters(afterLat, afterLon, loc.first, loc.second) <= nearJunctionM
+                    meters(afterLat, afterLon, loc.first, loc.second) <= nearJunctionM &&
+                    restrictions.decision(before.wayId, node, after.wayId) ==
+                        TurnDecision.NO_KNOWN_RESTRICTION
             }
         }
     }
@@ -168,7 +173,10 @@ internal class OsmRoadGraph(private val roads: List<SpeedWayGeometry>) {
             val next = options.single()
             if (next.level != edge.level ||
                 next.from in conflicted ||
-                next.key in seen) break
+                next.key in seen ||
+                restrictions.decision(
+                    roads[edge.key.way].wayId, edge.to, roads[next.key.way].wayId
+                ) != TurnDecision.NO_KNOWN_RESTRICTION) break
             val maxTurn = if (next.key.way == edge.key.way) 120.0 else 55.0
             if (angle(edge.bearing, next.bearing) > maxTurn) break
             edge = next

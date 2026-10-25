@@ -240,6 +240,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             "node$a[\"traffic_sign:backward\"];" +
             "node$a[\"overtaking\"=\"no\"];" +
             "node$a[\"maxspeed\"];" +
+            "relation$a[\"type\"=\"restriction\"];" +
             ");out tags geom;"
     }
 
@@ -298,10 +299,48 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val els = JSONObject(txt).getJSONArray("elements")
         val ways = ArrayList<Way>()
         val signs = ArrayList<SignItem>()
+        val restrictions = ArrayList<OsmTurnRestriction>()
         for (i in 0 until els.length()) {
             val e = els.getJSONObject(i)
             val tg = e.optJSONObject("tags") ?: continue
-            if (e.optString("type") == "way") {
+            if (e.optString("type") == "relation" &&
+                tg.str("type") == "restriction") {
+                val members = e.optJSONArray("members")
+                val from = ArrayList<Long>()
+                val to = ArrayList<Long>()
+                val viaNodes = ArrayList<Long>()
+                var unusual = members == null
+                if (members != null) {
+                    for (k in 0 until members.length()) {
+                        val member = members.optJSONObject(k) ?: continue
+                        val role = member.optString("role")
+                        val kind = member.optString("type")
+                        val id = member.optLong("ref", -1L)
+                        if (id <= 0L) { unusual = true; continue }
+                        when (role) {
+                            "from" -> if (kind == "way") from.add(id) else unusual = true
+                            "to" -> if (kind == "way") to.add(id) else unusual = true
+                            "via" -> if (kind == "node") viaNodes.add(id) else unusual = true
+                            else -> unusual = true
+                        }
+                    }
+                }
+                if (from.size == 1) restrictions.add(
+                    OsmTurnRestriction(
+                        relationId = e.optLong("id", -1L),
+                        fromWayId = from.single(),
+                        toWayId = to.singleOrNull(),
+                        viaNodeId = viaNodes.singleOrNull(),
+                        restriction = tg.str("restriction:motorcar") ?: tg.str("restriction"),
+                        unsupported = unusual || to.size != 1 || viaNodes.size != 1 ||
+                            tg.str("except") != null ||
+                            tg.str("restriction:conditional") != null ||
+                            tg.str("restriction:motorcar:conditional") != null ||
+                            tg.str("restriction:vehicle") != null ||
+                            tg.str("restriction:motor_vehicle") != null
+                    )
+                )
+            } else if (e.optString("type") == "way") {
                 val hw = tg.str("highway") ?: continue
                 val g = e.optJSONArray("geometry") ?: continue
                 if (g.length() < 2) continue
@@ -361,7 +400,8 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         }
         val geometries = ways.map { it.geometry }
         return Data(
-            lat, lon, ways, geometries, OsmRoadGraph(geometries),
+            lat, lon, ways, geometries,
+            OsmRoadGraph(geometries, OsmTurnRestrictions(restrictions)),
             signs, now, stale, savedAtEpochMs
         )
     }

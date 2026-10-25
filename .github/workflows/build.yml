@@ -34,7 +34,7 @@ jobs:
           gradle-version: '8.9'
       - name: Build development APK
         run: gradle :app:assembleDebug --no-daemon --console=plain
-      - name: Test OSM speed limit and traffic sign parsing
+      - name: Test OSM parsing, turn restrictions and GPS replay
         run: gradle :app:testDebugUnitTest --no-daemon --console=plain
       - name: Upload debug APK for testing
         uses: actions/upload-artifact@v4
