@@ -54,6 +54,8 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.MultiLineString
 import org.maplibre.geojson.Point
+import java.io.File
+import java.util.concurrent.Executors
 import java.util.Calendar
 import kotlin.math.abs
 import kotlin.math.asin
@@ -93,6 +95,14 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     )
     private var signsKey = Int.MIN_VALUE
     private val signsSrc = "ct-signs"
+    private val reportsSrc = "ct-personal-reports"
+    private val reportStore = TrafficReportStore(File(appCtx.filesDir, "traffic_reports_v1.json"))
+    private val reportWorker = Executors.newSingleThreadExecutor()
+    private var reportSnapshot: List<TrafficReport> = emptyList()
+    private var reportLayerEnabled = false
+    private var reportKey = Int.MIN_VALUE
+    private var lastReportFetchMs = -10_000L
+    private var reportsLoading = false
 
     private var vd: VirtualDisplay? = null
     private var reader: ImageReader? = null
@@ -691,6 +701,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             refreshStreet(nowMs)
         }
         updateSigns()
+        updatePersonalReports(nowMs)
     }
 
     // ---------- biển báo & giới hạn tốc độ ----------
@@ -739,6 +750,88 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             signsKey = key
         } catch (t: Throwable) {
             logErr("NativeMap:698", t)
+        }
+    }
+
+    /**
+     * Background file read every 5 seconds; never parse JSON during the 33 ms
+     * map tick. Disabled by default; errors clear the layer (fail closed).
+     */
+    private fun updatePersonalReports(nowMs: Long) {
+        val elapsed = SystemClock.elapsedRealtime()
+        if (reportsLoading || elapsed - lastReportFetchMs < 5_000L) return
+        lastReportFetchMs = elapsed
+        reportsLoading = true
+        reportWorker.execute {
+            val enabled = appCtx.getSharedPreferences(
+                "traffic_report_privacy", Context.MODE_PRIVATE
+            ).getBoolean("show_map", false)
+            val records = if (enabled) try {
+                reportStore.list()
+            } catch (e: Exception) {
+                logErr("NativeMap:personalReports", e)
+                emptyList()
+            } else emptyList()
+            main.post {
+                reportLayerEnabled = enabled
+                reportSnapshot = records
+                reportsLoading = false
+                drawPersonalReports(nowMs)
+            }
+        }
+        // GPS position can change between file polls, so update the clip.
+        drawPersonalReports(nowMs)
+    }
+
+    private fun drawPersonalReports(nowMs: Long) {
+        val style = map?.style ?: return
+        val source = style.getSourceAs<GeoJsonSource>(reportsSrc) ?: return
+        val selected = TrafficReportMapPolicy.visible(
+            reportSnapshot, reportLayerEnabled && hasFix, tLat, tLon, nowMs
+        )
+        var key = if (reportLayerEnabled) 1 else 0
+        for (item in selected) {
+            key = 31 * key + item.id.hashCode()
+            key = 31 * key + item.kind.hashCode()
+            key = 31 * key + item.severity.hashCode()
+            key = 31 * key + item.createdAtMs.hashCode()
+            key = 31 * key + item.location.hashCode()
+        }
+        if (key == reportKey) return
+        val features = selected.mapNotNull { report ->
+            val p = report.location ?: return@mapNotNull null
+            Feature.fromGeometry(Point.fromLngLat(p.lon, p.lat)).apply {
+                // Deliberately do not show note text/coordinates on the car screen.
+                addStringProperty("label", "CN?")
+                addStringProperty("kind", report.kind.name)
+                addStringProperty("verification", "personal_unverified")
+            }
+        }
+        source.setGeoJson(FeatureCollection.fromFeatures(features))
+        reportKey = key
+    }
+
+    private fun installPersonalReports(style: Style) {
+        try {
+            reportKey = Int.MIN_VALUE
+            style.addSource(GeoJsonSource(reportsSrc))
+            style.addLayer(CircleLayer("ct-personal-reports-circle", reportsSrc)
+                .withProperties(
+                    PropertyFactory.circleRadius(9f),
+                    PropertyFactory.circleColor("#bf8530"),
+                    PropertyFactory.circleStrokeColor("#24334e"),
+                    PropertyFactory.circleStrokeWidth(2f)
+                ))
+            style.addLayer(SymbolLayer("ct-personal-reports-label", reportsSrc)
+                .withProperties(
+                    PropertyFactory.textField(Expression.get("label")),
+                    PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+                    PropertyFactory.textSize(9f),
+                    PropertyFactory.textColor("#ffffff"),
+                    PropertyFactory.textAllowOverlap(true)
+                ))
+        } catch (e: Exception) {
+            logErr("NativeMap:installPersonalReports", e)
         }
     }
 
@@ -901,6 +994,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             if (night) themeNight(style)
             tuneLabels(style)
             installSigns(style)
+            installPersonalReports(style)
             status = "Bản đồ đã tải"
             if (perfDebug) {
                 performance.finishMapLoad(SystemClock.elapsedRealtime())?.let {

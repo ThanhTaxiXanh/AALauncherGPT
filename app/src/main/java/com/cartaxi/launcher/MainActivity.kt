@@ -31,6 +31,11 @@ import java.io.File
 class MainActivity : Activity() {
     private val reqPick = 2
     private val reqLocation = 1
+    private val reqReportExport = 3
+    private var exportWithGps = false
+    private val reportPrivacy by lazy {
+        getSharedPreferences("traffic_report_privacy", MODE_PRIVATE)
+    }
     private var pad = 0
     private lateinit var preview: ImageView
     private lateinit var eventBox: LinearLayout
@@ -111,6 +116,24 @@ class MainActivity : Activity() {
         root.addView(reportsTitle)
         root.addView(reportBox)
         root.addView(addReport)
+        val showOnMap = CheckBox(this).apply {
+            text = "Hiển thị báo cáo của tôi trên bản đồ (chưa xác minh)"
+            isChecked = reportPrivacy.getBoolean("show_map", false)
+            setOnCheckedChangeListener { _, checked ->
+                reportPrivacy.edit().putBoolean("show_map", checked).apply()
+            }
+        }
+        val exportReports = Button(this).apply {
+            text = "Xuất báo cáo JSON"
+            setOnClickListener { showExportDialog() }
+        }
+        val eraseGps = Button(this).apply {
+            text = "Xóa toàn bộ GPS khỏi báo cáo"
+            setOnClickListener { confirmEraseGps() }
+        }
+        root.addView(showOnMap)
+        root.addView(exportReports)
+        root.addView(eraseGps)
         val scroll = ScrollView(this)
         scroll.addView(root)
         setContentView(scroll)
@@ -286,6 +309,11 @@ class MainActivity : Activity() {
                         }.show()
                 }
             }
+            val edit = Button(this).apply {
+                text = "Sửa"
+                setOnClickListener { showReportDialog(report) }
+            }
+            row.addView(edit)
             row.addView(delete)
             reportBox.addView(row)
         }
@@ -309,7 +337,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showReportDialog() {
+    private fun showReportDialog(existing: TrafficReport? = null) {
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad / 2, pad, 0)
@@ -328,20 +356,26 @@ class MainActivity : Activity() {
                 severityTypes.map { it.title }
             )
         }
+        type.setSelection(existing?.kind?.ordinal ?: 0)
+        severity.setSelection(existing?.severity?.ordinal ?: 0)
         val note = EditText(this).apply {
             hint = "Ghi chú (không quá 240 ký tự, không bắt buộc)"
+            setText(existing?.note.orEmpty())
             setSingleLine(false)
             maxLines = 3
         }
         val attachGps = CheckBox(this).apply {
             text = "Đính kèm vị trí GPS hiện tại (tùy chọn)"
-            isChecked = false
+            isChecked = existing?.location != null
         }
         val gpsHint = TextView(this).apply {
             text = "Mặc định không lưu tọa độ. Dữ liệu chưa được xác minh và không tải lên mạng."
             textSize = 13f
         }
-        var selectedLocation: TrafficReportLocation? = null
+        var selectedLocation: TrafficReportLocation? = existing?.location
+        if (selectedLocation != null) {
+            gpsHint.text = "Vị trí GPS đã lưu sẽ được giữ nếu vẫn chọn đính kèm."
+        }
         attachGps.setOnCheckedChangeListener { _, checked ->
             selectedLocation = if (checked) recentReportLocation() else null
             gpsHint.text = if (!checked) {
@@ -362,7 +396,8 @@ class MainActivity : Activity() {
         wrap.addView(attachGps)
         wrap.addView(gpsHint)
         val dialog = AlertDialog.Builder(this)
-            .setTitle("Tạo báo cáo giao thông · Offline")
+            .setTitle(if (existing == null) "Tạo báo cáo · Offline"
+                else "Chỉnh sửa báo cáo cục bộ")
             .setView(wrap)
             .setNegativeButton("Hủy", null)
             .setPositiveButton("Lưu cục bộ", null)
@@ -375,12 +410,22 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 try {
-                    reportStore.create(
-                        types[type.selectedItemPosition],
-                        severityTypes[severity.selectedItemPosition],
-                        note.text.toString().trim(),
-                        if (attachGps.isChecked) selectedLocation else null
-                    )
+                    if (existing == null) {
+                        reportStore.create(
+                            types[type.selectedItemPosition],
+                            severityTypes[severity.selectedItemPosition],
+                            note.text.toString().trim(),
+                            if (attachGps.isChecked) selectedLocation else null
+                        )
+                    } else {
+                        checkNotNull(reportStore.update(
+                            existing.id,
+                            types[type.selectedItemPosition],
+                            severityTypes[severity.selectedItemPosition],
+                            note.text.toString().trim(),
+                            if (attachGps.isChecked) selectedLocation else null
+                        )) { "Báo cáo đã bị xóa." }
+                    }
                     dialog.dismiss()
                     refreshReports()
                     Toast.makeText(this, "Đã lưu báo cáo offline", Toast.LENGTH_SHORT).show()
@@ -398,6 +443,75 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
+    private fun confirmEraseGps() {
+        AlertDialog.Builder(this)
+            .setTitle("Xóa vĩnh viễn tọa độ GPS?")
+            .setMessage(
+                "Chỉ xóa vị trí khỏi các báo cáo trên điện thoại. " +
+                    "Loại sự cố, ghi chú và thời gian sẽ được giữ lại. " +
+                    "Dữ liệu đã xuất trước đây không thể thu hồi."
+            )
+            .setNegativeButton("Hủy", null)
+            .setPositiveButton("Xóa GPS") { _, _ ->
+                try {
+                    val count = reportStore.clearAllLocations()
+                    refreshReports()
+                    Toast.makeText(this, "Đã xóa GPS khỏi $count báo cáo",
+                        Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    logErr("MainActivity:eraseReportsGps", e)
+                    Toast.makeText(this, "Không thể xóa GPS; dữ liệu cũ được giữ.",
+                        Toast.LENGTH_LONG).show()
+                }
+            }.show()
+    }
+
+    private fun showExportDialog() {
+        val include = CheckBox(this).apply {
+            text = "Bao gồm tọa độ GPS (có thể tiết lộ vị trí cá nhân)"
+            isChecked = false
+            setPadding(pad, pad / 2, pad, pad / 2)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Xuất báo cáo cá nhân")
+            .setMessage("Tạo file JSON qua bộ chọn nơi lưu của Android. " +
+                "Mặc định loại bỏ toàn bộ GPS; file được xuất có thể được ứng dụng khác đọc.")
+            .setView(include)
+            .setNegativeButton("Hủy", null)
+            .setPositiveButton("Chọn nơi lưu") { _, _ ->
+                exportWithGps = include.isChecked
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "application/json"
+                    putExtra(Intent.EXTRA_TITLE,
+                        "AALauncherGPT_reports_${System.currentTimeMillis()}.json")
+                }
+                try {
+                    startActivityForResult(intent, reqReportExport)
+                } catch (e: Exception) {
+                    exportWithGps = false
+                    Toast.makeText(this, "Không mở được nơi lưu tệp.",
+                        Toast.LENGTH_LONG).show()
+                }
+            }.show()
+    }
+
+    private fun writeReportExport(uri: Uri) {
+        val include = exportWithGps
+        exportWithGps = false
+        try {
+            val payload = reportStore.exportJson(include)
+            contentResolver.openOutputStream(uri, "w")?.use {
+                it.write(payload.toByteArray(Charsets.UTF_8))
+                it.flush()
+            } ?: throw IllegalStateException("Không mở được tệp xuất.")
+            Toast.makeText(this, "Đã xuất báo cáo JSON", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            logErr("MainActivity:reportExport", e)
+            Toast.makeText(this, "Xuất báo cáo thất bại.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     // ---------- ảnh QR ----------
 
     private fun refreshPreview() {
@@ -408,6 +522,12 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == reqReportExport) {
+            if (resultCode == RESULT_OK) {
+                data?.data?.let { writeReportExport(it) } ?: run { exportWithGps = false }
+            } else exportWithGps = false
+            return
+        }
         if (requestCode == reqPick && resultCode == RESULT_OK) {
             val uri = data?.data ?: return
             saveQr(uri)

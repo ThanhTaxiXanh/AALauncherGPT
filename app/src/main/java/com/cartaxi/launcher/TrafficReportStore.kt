@@ -80,6 +80,63 @@ class TrafficReportStore(
         return candidate
     }
 
+
+    /** Edit in place: report ID and original creation time never change. */
+    @Synchronized fun update(
+        id: String, kind: TrafficReportKind,
+        severity: TrafficReportSeverity, note: String,
+        location: TrafficReportLocation?
+    ): TrafficReport? {
+        require(note.length <= 240) { "Ghi chú tối đa 240 ký tự." }
+        val reports = read()
+        val index = reports.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val changed = reports.toMutableList()
+        val edited = reports[index].copy(
+            kind = kind, severity = severity, note = note.trim(), location = location
+        )
+        changed[index] = edited
+        if (edited != reports[index]) write(changed)
+        return edited
+    }
+
+    /** Privacy erasure; all non-location fields are preserved. */
+    @Synchronized fun clearAllLocations(): Int {
+        val reports = read()
+        val count = reports.count { it.location != null }
+        if (count > 0) write(reports.map { it.copy(location = null) })
+        return count
+    }
+
+    /**
+     * Explicit user-triggered export only. GPS is omitted by default,
+     * including all lat/lon/accuracy keys; never send it to a server.
+     */
+    @Synchronized fun exportJson(includeGps: Boolean = false): String {
+        val exported = JSONArray()
+        for (r in read()) {
+            val obj = JSONObject()
+                .put("id", r.id)
+                .put("kind", r.kind.name)
+                .put("severity", r.severity.name)
+                .put("note", r.note)
+                .put("createdAtMs", r.createdAtMs)
+                .put("verified", false)
+            if (includeGps && r.location != null) {
+                obj.put("location", JSONObject()
+                    .put("lat", r.location.lat)
+                    .put("lon", r.location.lon)
+                    .put("accuracyM", r.location.accuracyM))
+            }
+            exported.put(obj)
+        }
+        return JSONObject()
+            .put("version", 1)
+            .put("scope", "personal_unverified")
+            .put("includesGps", includeGps)
+            .put("reports", exported).toString(2)
+    }
+
     @Synchronized fun delete(id: String): Boolean {
         val reports = read()
         val remaining = reports.filterNot { it.id == id }
