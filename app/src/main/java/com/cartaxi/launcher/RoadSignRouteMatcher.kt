@@ -120,14 +120,15 @@ internal object RoadSignRouteMatcher {
             // cheap bound avoids projecting remote OSM nodes.
             val crow = localDistance(lat, lon, sign.lat, sign.lon)
             if (crow > MAX_LOOKAHEAD_M + 30.0) continue
-            val idx = if (sign.osmNodeId != null && road.nodeIds.size == route.count)
-                road.nodeIds.indexOf(sign.osmNodeId) else -1
+            val nodeId = sign.osmNodeId
+            val idx = if (nodeId != null && road.nodeIds.size == route.count)
+                road.nodeIds.indexOf(nodeId) else -1
             // If the sign belongs to a different OSM way, do not project it
             // onto the current way just because two centerlines are close.
-            if (sign.osmNodeId != null && idx < 0 &&
-                roads.any { other -> other.nodeIds.contains(sign.osmNodeId) }) continue
-            val sharedNode = idx >= 0 && roads.any { other ->
-                other.wayId != road.wayId && other.nodeIds.contains(sign.osmNodeId)
+            if (nodeId != null && idx < 0 &&
+                roads.any { other -> other.nodeIds.contains(nodeId) }) continue
+            val sharedNode = idx >= 0 && nodeId != null && roads.any { other ->
+                other.wayId != road.wayId && other.nodeIds.contains(nodeId)
             }
             if (sharedNode && sign.facing == null) continue
 
