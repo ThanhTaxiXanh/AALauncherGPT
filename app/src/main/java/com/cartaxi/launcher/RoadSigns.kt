@@ -23,7 +23,10 @@ data class SignItem(
     val label: String,   // chữ ngắn vẽ trong vòng tròn trên bản đồ
     val name: String,    // tên đầy đủ hiện ở widget
     val value: Int,      // km/h nếu có
-    val facing: Double? = null // OSM direction: physical sign facing, opposite travel
+    val facing: Double? = null, // OSM direction: physical sign facing, opposite travel
+    val osmNodeId: Long? = null,
+    /** OSM traffic_sign:forward/backward applies to the parent way node order. */
+    val wayDirection: Int? = null
 )
 
 data class UpcomingSign(val item: SignItem, val distM: Int)
@@ -306,6 +309,10 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                     pts[2 * j] = p.getDouble("lat")
                     pts[2 * j + 1] = p.getDouble("lon")
                 }
+                val nodeArray = e.optJSONArray("nodes")
+                val nodeIds = if (nodeArray != null && nodeArray.length() == g.length()) {
+                    LongArray(nodeArray.length()) { j -> nodeArray.optLong(j, -1L) }
+                } else LongArray(0)
                 val wayId = e.optLong("id", -1L)
                 // A missing way ID cannot support road-specific speed reporting.
                 if (wayId <= 0L) continue
@@ -316,7 +323,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 }
                 ways.add(
                     Way(
-                        SpeedWayGeometry(wayId, roadLevel, pts),
+                        SpeedWayGeometry(wayId, roadLevel, pts, nodeIds),
                         hw,
                         parseSpeed(tg.str("maxspeed")),
                         parseSpeed(tg.str("maxspeed:forward")),
@@ -329,7 +336,17 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             } else if (e.optString("type") == "node") {
                 if (!e.has("lat") || !e.has("lon")) continue
                 classify(tg, e.getDouble("lat"), e.getDouble("lon"))?.let { item ->
-                    signs.add(item.copy(facing = parseFacing(tg.str("direction"))))
+                    val forwardTag = tg.str("traffic_sign:forward")
+                    val backwardTag = tg.str("traffic_sign:backward")
+                    val wayDirection = if (tg.str("traffic_sign") != null) null
+                        else if (forwardTag != null && backwardTag == null) 1
+                        else if (backwardTag != null && forwardTag == null) -1
+                        else null
+                    signs.add(item.copy(
+                        facing = parseFacing(tg.str("direction")),
+                        osmNodeId = e.optLong("id", -1L).takeIf { it > 0L },
+                        wayDirection = wayDirection
+                    ))
                 }
             }
         }
@@ -368,7 +385,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             t.str("overtaking") == "no" || trafficSign.contains("no_overtaking") || trafficSign.contains("no-overtaking") || trafficSign.contains("p.125") ->
                 SignItem(lat, lon, "no_overtaking", "CẤM", "Cấm vượt", 0)
             ms != null -> SignItem(lat, lon, "speed", ms.toString(), "Giới hạn $ms km/h", ms)
-            t.str("traffic_sign") != null -> fromTrafficSign(t.str("traffic_sign")!!, lat, lon)
+            trafficSign.isNotBlank() -> fromTrafficSign(trafficSign, lat, lon)
             else -> null
         }
     }
@@ -563,28 +580,15 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             speedWayMatcher.reset()
         }
 
-        // 2) biển báo phía trước (trong nón 30° trước mũi xe, tối đa 350 m)
-        val cand = ArrayList<UpcomingSign>()
-        for (s in (if (usable) d!!.signs else emptyList()) + extraSigns) {
-            val dx = (s.lon - lon) * kx
-            val dy = (s.lat - lat) * ky
-            val dd = sqrt(dx * dx + dy * dy)
-            if (dd < 10.0 || dd > 350.0) continue
-            val b = (Math.toDegrees(atan2(dx, dy)) + 360.0) % 360.0
-            if (moving && heading.isFinite()) {
-                if (s.facing != null && angDiff((s.facing + 180.0) % 360.0, heading) > 65.0) continue
-                val a = angDiff(b, heading)
-                if (a > 30.0) continue
-                if (dd * sin(Math.toRadians(a)) > 22.0) continue
-            }
-            cand.add(UpcomingSign(s, dd.roundToInt()))
-        }
-        cand.sortBy { it.distM }
-        val ups = ArrayList<UpcomingSign>()
-        for (c in cand) {
-            if (ups.none { it.item.type == c.item.type && abs(it.distM - c.distM) < 25 }) ups.add(c)
-            if (ups.size >= 4) break
-        }
+        // 2) Only show route-relative warnings on an unambiguous matched way.
+        // No navigation route is available: never invent a turn at a junction.
+        val ups = if (usable && match != null) {
+            RoadSignRouteMatcher.upcoming(
+                lat, lon, heading, moving, accuracyM,
+                match, d!!.geometries, d.signs + extraSigns
+            )
+        } else emptyList()
+
         val status = when {
             !usable && (cacheMode == SignCacheUse.OFFLINE_HINT ||
                 nearbyArchived(lat, lon).isNotEmpty()) ->

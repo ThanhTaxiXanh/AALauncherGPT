@@ -11,7 +11,8 @@ import kotlin.math.min
 internal class SpeedWayGeometry(
     val wayId: Long,
     val level: Int,
-    val points: DoubleArray
+    val points: DoubleArray,
+    val nodeIds: LongArray = LongArray(0)
 )
 
 /** Forward follows the OSM way node order (not a GPS lane claim). */
