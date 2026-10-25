@@ -8,11 +8,15 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.location.Location
+import android.location.LocationManager
+import android.os.SystemClock
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -30,6 +34,10 @@ class MainActivity : Activity() {
     private var pad = 0
     private lateinit var preview: ImageView
     private lateinit var eventBox: LinearLayout
+    private lateinit var reportBox: LinearLayout
+    private val reportStore by lazy {
+        TrafficReportStore(File(filesDir, "traffic_reports_v1.json"))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,12 +98,26 @@ class MainActivity : Activity() {
         root.addView(evTitle)
         root.addView(eventBox)
         root.addView(addEv)
+        val reportsTitle = TextView(this).apply {
+            text = "Báo cáo giao thông (lưu offline trên điện thoại)"
+            textSize = 18f
+            setPadding(0, pad, 0, 0)
+        }
+        reportBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val addReport = Button(this).apply {
+            text = "Tạo báo cáo giao thông"
+            setOnClickListener { this@MainActivity.showReportDialog() }
+        }
+        root.addView(reportsTitle)
+        root.addView(reportBox)
+        root.addView(addReport)
         val scroll = ScrollView(this)
         scroll.addView(root)
         setContentView(scroll)
 
         refreshPreview()
         refreshEvents()
+        refreshReports()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -203,6 +225,177 @@ class MainActivity : Activity() {
                 }
             }
             .show()
+    }
+
+    // ---------- báo cáo giao thông Phase 4: lưu cục bộ ----------
+    private fun refreshReports() {
+        reportBox.removeAllViews()
+        val saved = try {
+            reportStore.list()
+        } catch (e: Exception) {
+            reportBox.addView(TextView(this).apply {
+                text = "Không đọc được dữ liệu báo cáo. File gốc được giữ nguyên."
+            })
+            logErr("MainActivity:reportRead", e)
+            return
+        }
+        if (saved.isEmpty()) {
+            reportBox.addView(TextView(this).apply {
+                text = "(chưa có báo cáo nào; không gửi dữ liệu lên mạng)"
+            })
+            return
+        }
+        reportBox.addView(TextView(this).apply {
+            text = "${saved.size} báo cáo cục bộ · chưa xác minh · chỉ lưu trên máy"
+            textSize = 13f
+        })
+        for (report in saved) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val details = TextView(this).apply {
+                val location = if (report.location != null)
+                    " · Có tọa độ GPS (±${report.location.accuracyM.toInt()} m)"
+                else " · Không đính kèm GPS"
+                val timestamp = java.text.DateFormat.getDateTimeInstance(
+                    java.text.DateFormat.SHORT, java.text.DateFormat.SHORT
+                ).format(java.util.Date(report.createdAtMs))
+                text = "${report.kind.title} · ${report.severity.title}\n" +
+                    "${report.note.ifBlank { "(không có ghi chú)" }}\n" +
+                    "$timestamp$location\nChưa xác minh · Chưa chia sẻ"
+                textSize = 14f
+            }
+            row.addView(details, LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+            ))
+            val delete = Button(this).apply {
+                text = "Xóa"
+                setOnClickListener {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Xóa báo cáo cục bộ?")
+                        .setMessage("Báo cáo này sẽ bị xóa khỏi điện thoại.")
+                        .setNegativeButton("Hủy", null)
+                        .setPositiveButton("Xóa") { _, _ ->
+                            try {
+                                reportStore.delete(report.id)
+                                refreshReports()
+                            } catch (e: Exception) {
+                                logErr("MainActivity:reportDelete", e)
+                                Toast.makeText(this@MainActivity,
+                                    "Không thể xóa báo cáo; dữ liệu vẫn được giữ.",
+                                    Toast.LENGTH_LONG).show()
+                            }
+                        }.show()
+                }
+            }
+            row.addView(delete)
+            reportBox.addView(row)
+        }
+    }
+
+    /** Only reads a recent location after a deliberate GPS opt-in. */
+    private fun recentReportLocation(): TrafficReportLocation? {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED) return null
+        return try {
+            val lm = getSystemService(LOCATION_SERVICE) as LocationManager
+            val gps = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER) ?: return null
+            if (!gps.hasAccuracy() || gps.accuracy !in 0f..50f) return null
+            val ageNs = SystemClock.elapsedRealtimeNanos() - gps.elapsedRealtimeNanos
+            if (ageNs < 0L || ageNs > 120_000_000_000L) return null
+            TrafficReportLocation(gps.latitude, gps.longitude, gps.accuracy.toDouble())
+        } catch (e: SecurityException) {
+            null
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+    }
+
+    private fun showReportDialog() {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val types = TrafficReportKind.entries
+        val severityTypes = TrafficReportSeverity.entries
+        val type = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                types.map { it.title }
+            )
+        }
+        val severity = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                severityTypes.map { it.title }
+            )
+        }
+        val note = EditText(this).apply {
+            hint = "Ghi chú (không quá 240 ký tự, không bắt buộc)"
+            setSingleLine(false)
+            maxLines = 3
+        }
+        val attachGps = CheckBox(this).apply {
+            text = "Đính kèm vị trí GPS hiện tại (tùy chọn)"
+            isChecked = false
+        }
+        val gpsHint = TextView(this).apply {
+            text = "Mặc định không lưu tọa độ. Dữ liệu chưa được xác minh và không tải lên mạng."
+            textSize = 13f
+        }
+        var selectedLocation: TrafficReportLocation? = null
+        attachGps.setOnCheckedChangeListener { _, checked ->
+            selectedLocation = if (checked) recentReportLocation() else null
+            gpsHint.text = if (!checked) {
+                "Không đính kèm vị trí GPS."
+            } else if (selectedLocation == null) {
+                "Chưa có GPS chính xác, mới trong 2 phút. Bỏ chọn GPS hoặc cấp quyền vị trí."
+            } else {
+                val loc = selectedLocation!!
+                "Vị trí sẽ lưu trên máy: ${"%.5f".format(loc.lat)}, " +
+                    "${"%.5f".format(loc.lon)} (±${loc.accuracyM.toInt()} m)"
+            }
+        }
+        wrap.addView(TextView(this).apply { text = "Loại sự cố" })
+        wrap.addView(type)
+        wrap.addView(TextView(this).apply { text = "Mức độ" })
+        wrap.addView(severity)
+        wrap.addView(note)
+        wrap.addView(attachGps)
+        wrap.addView(gpsHint)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Tạo báo cáo giao thông · Offline")
+            .setView(wrap)
+            .setNegativeButton("Hủy", null)
+            .setPositiveButton("Lưu cục bộ", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (attachGps.isChecked && selectedLocation == null) {
+                    Toast.makeText(this, "Không có GPS hợp lệ; hãy bỏ chọn GPS.",
+                        Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+                try {
+                    reportStore.create(
+                        types[type.selectedItemPosition],
+                        severityTypes[severity.selectedItemPosition],
+                        note.text.toString().trim(),
+                        if (attachGps.isChecked) selectedLocation else null
+                    )
+                    dialog.dismiss()
+                    refreshReports()
+                    Toast.makeText(this, "Đã lưu báo cáo offline", Toast.LENGTH_SHORT).show()
+                } catch (e: IllegalArgumentException) {
+                    Toast.makeText(this, e.message ?: "Dữ liệu báo cáo không hợp lệ",
+                        Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    logErr("MainActivity:reportSave", e)
+                    Toast.makeText(this,
+                        "Không lưu được báo cáo. File cũ được giữ nguyên.",
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        dialog.show()
     }
 
     // ---------- ảnh QR ----------
