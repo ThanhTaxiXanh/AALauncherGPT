@@ -86,6 +86,49 @@ internal class OsmRoadGraph(private val roads: List<SpeedWayGeometry>) {
 
     fun containsWay(wayIndex: Int): Boolean = wayIndex in trackedWays
 
+    /** A GPS way/direction must be actually drivable under OSM oneway tags. */
+    fun allowsTravel(match: SpeedWayMatch): Boolean =
+        match.wayIndex in roads.indices &&
+            roads[match.wayIndex].wayId == match.wayId &&
+            edges.keys.any { it.way == match.wayIndex && it.forward == match.forward }
+
+    /**
+     * Validate an *observed* turn from one way to another. This does not
+     * authorize a future turn; OSM turn-restriction relations are not loaded.
+     * Require the preceding directed segment to enter a shared OSM node and
+     * the new directed segment to leave it at the same level.
+     */
+    fun observedTransition(
+        before: SpeedWayMatch, after: SpeedWayMatch,
+        beforeLat: Double, beforeLon: Double,
+        afterLat: Double, afterLon: Double,
+        nearJunctionM: Double = 85.0
+    ): Boolean {
+        if (before.wayIndex == after.wayIndex) return false
+        if (!allowsTravel(before) || !allowsTravel(after) ||
+            !beforeLat.isFinite() || !beforeLon.isFinite() ||
+            !afterLat.isFinite() || !afterLon.isFinite() ||
+            !nearJunctionM.isFinite() || nearJunctionM <= 0.0) return false
+        val fromWay = roads[before.wayIndex]
+        val toWay = roads[after.wayIndex]
+        if (fromWay.level != toWay.level) return false
+        val entering = edges.values.asSequence()
+            .filter { it.key.way == before.wayIndex && it.key.forward == before.forward }
+            .map { it.to }.toSet()
+        val exiting = edges.values.asSequence()
+            .filter { it.key.way == after.wayIndex && it.key.forward == after.forward }
+            .map { it.from }.toSet()
+        return (entering intersect exiting).any { node ->
+            if (node in conflicted) false
+            else {
+                val loc = nodeCoordinates[node]
+                loc != null &&
+                    meters(beforeLat, beforeLon, loc.first, loc.second) <= nearJunctionM &&
+                    meters(afterLat, afterLon, loc.first, loc.second) <= nearJunctionM
+            }
+        }
+    }
+
     /**
      * Returns an ordered non-branching prefix, starting at the GPS projection
      * on a known segment. Later legs are full segments. Stops on ambiguous

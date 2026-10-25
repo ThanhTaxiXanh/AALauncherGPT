@@ -712,7 +712,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         try {
             signs.request(tLat, tLon)
             signsState = signs.state(
-                filteredGpsLat, filteredGpsLon, tHeading, moving, lastAccuracyM
+                filteredGpsLat, filteredGpsLon, tHeading, moving, lastAccuracyM, fixMs
             )
             val near = signs.nearby(tLat, tLon, 600.0, 60)
             // Include sign type, label and limit: the same node can change meaning after refresh.

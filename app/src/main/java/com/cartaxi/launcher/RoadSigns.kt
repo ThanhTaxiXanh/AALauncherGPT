@@ -100,6 +100,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     private var hintCenterLon = Double.NaN
 
     private val speedWayMatcher = SpeedWayMatcher()
+    private val turnTracker = ObservedRoadTurnTracker()
     private var lastWayId: Long? = null
     private var lastData: Data? = null
     private val extraSigns: List<SignItem> = parseOpenGeoJson(supplementalGeoJson)
@@ -530,13 +531,17 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
     }
 
     /** One update per second; accuracyM is horizontal GPS uncertainty in metres. */
-    fun state(lat: Double, lon: Double, heading: Double, moving: Boolean, accuracyM: Double): SignsState {
+    fun state(
+        lat: Double, lon: Double, heading: Double,
+        moving: Boolean, accuracyM: Double, gpsFixMs: Long
+    ): SignsState {
         val d = data
         val now = SystemClock.elapsedRealtime()
         if (d != null && d !== lastData) {
             lastData = d
             lastWayId = null
             speedWayMatcher.reset()
+            turnTracker.reset()
             shown = null
             pendV = null
             pendN = 0
@@ -594,10 +599,20 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
 
         // 2) Only show route-relative warnings on an unambiguous matched way.
         // No navigation route is available: never invent a turn at a junction.
-        val ups = if (usable && match != null) {
+        // Multiple UI renders of the same GPS fix cannot count as evidence
+        // of an observed turn. Until fresh GPS fixes confirm the chosen road,
+        // speed may show OSM data, but upcoming sign warnings are withheld.
+        val observed = if (usable && now - gpsFixMs in 0L..4_000L && match != null)
+            turnTracker.observe(
+                match, lat, lon, heading, moving, accuracyM, gpsFixMs, d!!.graph
+            ) else {
+                turnTracker.reset()
+                null
+            }
+        val ups = if (observed != null) {
             RoadSignRouteMatcher.upcoming(
                 lat, lon, heading, moving, accuracyM,
-                match, d!!.geometries, d.signs + extraSigns, d.graph
+                observed, d!!.geometries, d.signs + extraSigns, d.graph
             )
         } else emptyList()
 
