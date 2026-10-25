@@ -132,39 +132,27 @@ object LauncherRenderer {
         val a = RectF(pad, pad, cw - pad, ch - pad)
         lastMapDst = null
 
-        val icons: RectF
-        val main: RectF
-        val cal: RectF
-        val qr: RectF
-        val signs: RectF
-
-        if (a.width() >= a.height() * 1.3f) {
-            val avail = a.width() - 2 * g
-            val iconW = avail * 0.075f
-            val mapW = avail * 0.44f
-            icons = RectF(a.left, a.top, a.left + iconW, a.bottom)
-            main = RectF(icons.right + g, a.top, icons.right + g + mapW, a.bottom)
-            val rx = main.right + g
-            val calH = a.height() * 0.38f
-            cal = RectF(rx, a.top, a.right, a.top + calH)
-            val lowTop = cal.bottom + g
-            val qrW = (a.right - rx - g) * 0.6f
-            qr = RectF(rx, lowTop, rx + qrW, a.bottom)
-            signs = RectF(qr.right + g, lowTop, a.right, a.bottom)
-        } else {
-            val avail = a.width() - 2 * g
-            val iconW = avail * 0.0948f
-            val mainW = avail * 0.5463f
-            icons = RectF(a.left, a.top, a.left + iconW, a.bottom)
-            main = RectF(icons.right + g, a.top, icons.right + g + mainW, a.bottom)
-            val rx = main.right + g
-            val availH = a.height() - 2 * g
-            val calH = availH * 0.20f
-            val qrH = availH * 0.55f
-            cal = RectF(rx, a.top, a.right, a.top + calH)
-            qr = RectF(rx, cal.bottom + g, a.right, cal.bottom + g + qrH)
-            signs = RectF(rx, qr.bottom + g, a.right, a.bottom)
+        // A validated 12x12 layout is the single source for rendering and
+        // hit rectangles. Icon rail always stays on the left for AA controls.
+        val layout = DashboardLayouts.active(st.settings)
+        fun rect(panel: DashboardPanel): RectF {
+            val cell = layout.tile(panel)
+            val cellW = a.width() / 12f
+            val cellH = a.height() / 12f
+            val inset = g * 0.42f
+            return RectF(
+                a.left + cell.x * cellW + inset,
+                a.top + cell.y * cellH + inset,
+                a.left + (cell.x + cell.width) * cellW - inset,
+                a.top + (cell.y + cell.height) * cellH - inset
+            )
         }
+        val icons = rect(DashboardPanel.ICONS)
+        val main = rect(DashboardPanel.MAP)
+        val cal = rect(DashboardPanel.CALENDAR)
+        val qr = rect(DashboardPanel.QR)
+        val signs = rect(DashboardPanel.SIGNS)
+
         lastIcons = icons
         lastMain = main
 

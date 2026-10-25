@@ -17,8 +17,20 @@ data class DashboardSettings(
     val showStreetName: Boolean = true,
     val mapTheme: MapThemeMode = MapThemeMode.AUTO,
     /** Personal notes only, never authoritative traffic signs. */
-    val showPersonalReportsOnMap: Boolean = false
-)
+    val showPersonalReportsOnMap: Boolean = false,
+    val layoutPresetId: String = "classic",
+    val useCustomLayout: Boolean = false,
+    val customLayout: DashboardLayout? = null
+) {
+    init {
+        require(DashboardLayouts.byId(layoutPresetId) != null) {
+            "Preset Dashboard không hợp lệ."
+        }
+        require(!useCustomLayout || customLayout != null) {
+            "Không thể sử dụng bố cục tùy chỉnh chưa lưu."
+        }
+    }
+}
 
 internal object DashboardSettingsCodec {
     const val VERSION = 1
@@ -48,7 +60,11 @@ internal object DashboardSettingsCodec {
             showSigns = bool("showSigns", true),
             showStreetName = bool("showStreetName", true),
             mapTheme = MapThemeMode.valueOf(obj.optString("mapTheme", "AUTO")),
-            showPersonalReportsOnMap = bool("showPersonalReportsOnMap", false)
+            showPersonalReportsOnMap = bool("showPersonalReportsOnMap", false),
+            layoutPresetId = obj.optString("layoutPresetId", "classic"),
+            useCustomLayout = bool("useCustomLayout", false),
+            customLayout = if (obj.has("customLayout") && !obj.isNull("customLayout"))
+                DashboardLayoutCodec.read(obj.getJSONArray("customLayout")) else null
         )
     }
 
@@ -60,6 +76,13 @@ internal object DashboardSettingsCodec {
         .put("showStreetName", value.showStreetName)
         .put("mapTheme", value.mapTheme.name)
         .put("showPersonalReportsOnMap", value.showPersonalReportsOnMap)
+        .put("layoutPresetId", value.layoutPresetId)
+        .put("useCustomLayout", value.useCustomLayout)
+        .apply {
+            value.customLayout?.let {
+                put("customLayout", DashboardLayoutCodec.write(it))
+            }
+        }
         .toString()
 }
 

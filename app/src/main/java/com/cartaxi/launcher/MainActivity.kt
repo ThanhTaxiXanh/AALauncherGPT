@@ -233,6 +233,174 @@ class MainActivity : Activity() {
         }
         root.addView(saveTheme)
         addSettingsResetButton(root)
+        addDashboardLayoutEditor(root)
+    }
+
+    // ---------- Phase 6: phone-only interactive 12x12 Layout Builder ----------
+    private fun addDashboardLayoutEditor(root: LinearLayout) {
+        root.addView(TextView(this).apply {
+            text = "Phase 6 · Dashboard Layout Builder"
+            textSize = 20f
+            setPadding(0, pad, 0, 0)
+        })
+        root.addView(TextView(this).apply {
+            text = "Chọn 1 trong 8 bố cục, hoặc chạm vào ô để chọn, " +
+                "kéo để di chuyển và kéo góc phải-dưới để đổi kích thước. " +
+                "Chỉ thay đổi khi bấm Lưu. Thanh điều khiển cố định bên trái."
+            textSize = 13f
+        })
+        val initial = try {
+            settingsRepository.read()
+        } catch (e: Exception) {
+            root.addView(TextView(this).apply {
+                text = "Không mở được Layout Builder: cần xử lý cấu hình lỗi trước."
+            })
+            return
+        }
+        var draft = DashboardLayouts.active(initial)
+        val preview = DashboardLayoutPreview(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (225 * resources.displayMetrics.density).toInt()
+            )
+            display(draft)
+        }
+        val message = TextView(this).apply {
+            text = "Bản xem trước chưa lưu · có thể điều chỉnh các ô."
+            textSize = 13f
+        }
+        val selection = TextView(this).apply {
+            text = "Ô đang chọn: Bản đồ"
+            textSize = 15f
+        }
+        preview.onSelectionChanged = { panel ->
+            selection.text = "Ô đang chọn: ${panel.title}"
+        }
+        preview.onEdited = { updated ->
+            draft = updated
+            message.text = "Đã chỉnh sửa bố cục · bấm Lưu để áp dụng lên Dashboard."
+        }
+        preview.onRejected = { message.text = it }
+        val presetOptions = DashboardLayouts.presets
+        val selectPreset = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                presetOptions.map { it.title }
+            )
+            setSelection(presetOptions.indexOfFirst { it.id == initial.layoutPresetId }
+                .coerceAtLeast(0))
+        }
+        root.addView(selectPreset)
+        root.addView(Button(this).apply {
+            text = "Áp dụng preset đã chọn"
+            setOnClickListener {
+                val preset = presetOptions[selectPreset.selectedItemPosition]
+                try {
+                    settingsRepository.change {
+                        it.copy(layoutPresetId = preset.id, useCustomLayout = false)
+                    }
+                    draft = preset.layout
+                    preview.display(draft)
+                    message.text = "Đã áp dụng: ${preset.title}. Bố cục tùy chỉnh cũ vẫn được giữ."
+                } catch (e: Exception) {
+                    logErr("MainActivity:layoutPreset", e)
+                    message.text = "Lưu preset thất bại. Cài đặt vẫn được giữ nguyên."
+                }
+            }
+        })
+        root.addView(preview)
+        root.addView(selection)
+        root.addView(message)
+
+        // Keyboard/switch-access friendly alternative to dragging.
+        fun addControls(left: String, right: String,
+                        moveLeft: (DashboardTile) -> DashboardTile,
+                        moveRight: (DashboardTile) -> DashboardTile) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            fun adjust(label: String, edit: (DashboardTile) -> DashboardTile) {
+                row.addView(Button(this).apply {
+                    text = label
+                    setOnClickListener {
+                        val panel = preview.selectedPanel
+                        if (panel == DashboardPanel.ICONS) {
+                            message.text = "Thanh điều khiển được cố định để bảo đảm thao tác."
+                            return@setOnClickListener
+                        }
+                        try {
+                            val tile = edit(draft.tile(panel))
+                            val next = draft.edit(panel, tile.x, tile.y, tile.width, tile.height)
+                            draft = next
+                            preview.display(next)
+                            message.text = "Bố cục đã chỉnh sửa nhưng chưa lưu."
+                        } catch (_: IllegalArgumentException) {
+                            message.text = "Không thể thay đổi: ô chồng lấn hoặc vượt giới hạn."
+                        }
+                    }
+                }, LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                ))
+            }
+            adjust(left, moveLeft)
+            adjust(right, moveRight)
+            root.addView(row)
+        }
+        addControls("← Trái", "Phải →",
+            { it.copy(x = it.x - 1) }, { it.copy(x = it.x + 1) })
+        addControls("↑ Lên", "Xuống ↓",
+            { it.copy(y = it.y - 1) }, { it.copy(y = it.y + 1) })
+        addControls("Hẹp hơn", "Rộng hơn",
+            { it.copy(width = it.width - 1) }, { it.copy(width = it.width + 1) })
+        addControls("Thấp hơn", "Cao hơn",
+            { it.copy(height = it.height - 1) }, { it.copy(height = it.height + 1) })
+
+        root.addView(Button(this).apply {
+            text = "Lưu bố cục tùy chỉnh và sử dụng"
+            setOnClickListener {
+                try {
+                    settingsRepository.change {
+                        it.copy(customLayout = draft, useCustomLayout = true)
+                    }
+                    message.text = "Đã lưu bố cục tùy chỉnh. Android Auto sẽ cập nhật."
+                } catch (e: Exception) {
+                    logErr("MainActivity:layoutSave", e)
+                    message.text = "Lưu thất bại; bố cục đang dùng không thay đổi."
+                }
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "Khôi phục bố cục tùy chỉnh đã lưu"
+            setOnClickListener {
+                try {
+                    val saved = settingsRepository.read().customLayout
+                    if (saved == null) {
+                        message.text = "Chưa có bố cục tùy chỉnh đã lưu."
+                    } else {
+                        settingsRepository.change { it.copy(useCustomLayout = true) }
+                        draft = saved
+                        preview.display(draft)
+                        message.text = "Đã khôi phục và áp dụng bố cục tùy chỉnh."
+                    }
+                } catch (e: Exception) {
+                    logErr("MainActivity:layoutRestore", e)
+                    message.text = "Không khôi phục được bố cục."
+                }
+            }
+        })
+        root.addView(Button(this).apply {
+            text = "Bỏ chỉnh sửa chưa lưu"
+            setOnClickListener {
+                try {
+                    draft = DashboardLayouts.active(settingsRepository.read())
+                    preview.display(draft)
+                    message.text = "Đã hiển thị lại bố cục đang được dùng."
+                } catch (e: Exception) {
+                    message.text = "Không đọc được bố cục hiện tại."
+                }
+            }
+        })
     }
 
     private fun addSettingsResetButton(root: LinearLayout) {
