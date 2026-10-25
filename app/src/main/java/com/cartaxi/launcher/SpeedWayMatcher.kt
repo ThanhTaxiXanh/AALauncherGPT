@@ -12,7 +12,9 @@ internal class SpeedWayGeometry(
     val wayId: Long,
     val level: Int,
     val points: DoubleArray,
-    val nodeIds: LongArray = LongArray(0)
+    val nodeIds: LongArray = LongArray(0),
+    /** 0: bidirectional; 1: OSM node order; -1: reverse; 2: unknown restriction. */
+    val oneway: Int = 0
 )
 
 /** Forward follows the OSM way node order (not a GPS lane claim). */

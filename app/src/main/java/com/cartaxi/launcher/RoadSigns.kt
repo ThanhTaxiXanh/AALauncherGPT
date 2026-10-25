@@ -79,6 +79,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val lon: Double,
         val ways: List<Way>,
         val geometries: List<SpeedWayGeometry>,
+        val graph: OsmRoadGraph,
         val signs: List<SignItem>,
         val timeMs: Long,
         val stale: Boolean,
@@ -316,6 +317,13 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 val wayId = e.optLong("id", -1L)
                 // A missing way ID cannot support road-specific speed reporting.
                 if (wayId <= 0L) continue
+                val oneWay = when (tg.str("oneway")?.trim()?.lowercase()) {
+                    "yes", "true", "1" -> 1
+                    "-1" -> -1
+                    "no", "false", "0" -> 0
+                    null -> if (tg.str("junction") == "roundabout") 1 else 0
+                    else -> 2 // Unknown rules are not traversable.
+                }
                 val roadLevel = tg.str("layer")?.toIntOrNull() ?: when {
                     tg.str("bridge") == "yes" -> 1
                     tg.str("tunnel") == "yes" -> -1
@@ -323,7 +331,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 }
                 ways.add(
                     Way(
-                        SpeedWayGeometry(wayId, roadLevel, pts, nodeIds),
+                        SpeedWayGeometry(wayId, roadLevel, pts, nodeIds, oneWay),
                         hw,
                         parseSpeed(tg.str("maxspeed")),
                         parseSpeed(tg.str("maxspeed:forward")),
@@ -350,7 +358,11 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
                 }
             }
         }
-        return Data(lat, lon, ways, ways.map { it.geometry }, signs, now, stale, savedAtEpochMs)
+        val geometries = ways.map { it.geometry }
+        return Data(
+            lat, lon, ways, geometries, OsmRoadGraph(geometries),
+            signs, now, stale, savedAtEpochMs
+        )
     }
 
     // OSM direction=* describes the way the sign physically faces. A driver
@@ -585,7 +597,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val ups = if (usable && match != null) {
             RoadSignRouteMatcher.upcoming(
                 lat, lon, heading, moving, accuracyM,
-                match, d!!.geometries, d.signs + extraSigns
+                match, d!!.geometries, d.signs + extraSigns, d.graph
             )
         } else emptyList()
 

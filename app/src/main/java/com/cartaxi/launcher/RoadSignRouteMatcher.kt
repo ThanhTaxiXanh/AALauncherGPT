@@ -97,8 +97,16 @@ internal object RoadSignRouteMatcher {
     fun upcoming(
         lat: Double, lon: Double, heading: Double, moving: Boolean,
         accuracyM: Double, match: SpeedWayMatch,
-        roads: List<SpeedWayGeometry>, signs: List<SignItem>
+        roads: List<SpeedWayGeometry>, signs: List<SignItem>,
+        graph: OsmRoadGraph? = null
     ): List<UpcomingSign> {
+        // A graph with verified OSM node IDs supports multiple connected ways.
+        // Geometry lacking node IDs retains the pre-existing single-way fallback.
+        if (graph?.containsWay(match.wayIndex) == true) {
+            return RoadGraphUpcomingSigns.upcoming(
+                lat, lon, heading, moving, accuracyM, match, roads, signs, graph
+            )
+        }
         if (!moving || !heading.isFinite() || !lat.isFinite() || !lon.isFinite() ||
             lat !in -90.0..90.0 || lon !in -180.0..180.0 ||
             !accuracyM.isFinite() || accuracyM < 0.0 || accuracyM > 25.0 ||
