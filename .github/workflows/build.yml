@@ -36,6 +36,14 @@ jobs:
         run: gradle :app:assembleDebug --no-daemon --console=plain
       - name: Test OSM parsing, turn restrictions and GPS replay
         run: gradle :app:testDebugUnitTest --no-daemon --console=plain
+      - name: Compile Android instrumentation smoke tests (no emulator execution)
+        run: gradle :app:assembleDebugAndroidTest --no-daemon --console=plain
+      - name: Phase 11A Android Lint
+        run: gradle :app:lintDebug --no-daemon --console=plain
+      - name: Phase 11A compliance audit (debug may continue)
+        run: python3 scripts/phase11a_car_policy_gate.py --audit
+      - name: Unit tests for Phase 11A compliance audit
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Verify AA Taxi Driver package identity and display name
         shell: bash
         run: |
@@ -117,6 +125,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Block Android Auto release until Navigation criteria are resolved
+        run: python3 scripts/phase11a_car_policy_gate.py --release
       - name: Restore and validate signing key
         shell: bash
         env:

@@ -11,6 +11,7 @@ android {
         applicationId = "Thanh.TaxiDriver.AALauncher"
         minSdk = 30
         targetSdk = 33
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // This repository has a fresh GitHub Actions run counter. Use a new
         // monotonically higher range for this new AA Taxi Driver app identity.
         // This package ID differs from legacy builds: it installs separately
@@ -53,6 +54,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    // Phase 11A: fail build on Android Lint errors (without disabling checks).
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = true
+        htmlReport = true
+        xmlReport = true
+    }
 }
 
 dependencies {
@@ -66,4 +75,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     // Android ships org.json at runtime; local JVM integration tests require the real parser.
     testImplementation("org.json:json:20240303")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

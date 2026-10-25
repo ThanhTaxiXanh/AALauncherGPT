@@ -129,6 +129,49 @@ class LauncherRenderer {
         return floatArrayOf((x - d.left) / d.width(), (y - d.top) / d.height())
     }
 
+    /**
+     * Car App Library NavigationTemplate map surface (NF-2): only map pixels
+     * and required OSM attribution. QR, calendar, icons and dashboard tiles
+     * are restricted to the standalone phone Activity.
+     *
+     * This method alone does NOT make the app compliant with NF-1:
+     * turn-by-turn navigation is still missing. Release remains blocked.
+     */
+    fun renderNavigationSurface(c: Canvas, width: Int, height: Int, st: UiState) {
+        c.drawColor(BG)
+        if (width <= 0 || height <= 0) {
+            lastMain = null
+            lastIcons = null
+            lastMapDst = null
+            return
+        }
+        val bounds = RectF(0f, 0f, width.toFloat(), height.toFloat())
+        lastMain = bounds
+        lastMapDst = bounds
+        lastIcons = null // Ignore icon taps on the map surface.
+        val frame = st.mapFrame
+        if (frame != null && st.mapFrameW > 0 && st.mapFrameH > 0) {
+            srcRect.set(0, 0, minOf(st.mapFrameW, frame.width),
+                minOf(st.mapFrameH, frame.height))
+            c.drawBitmap(frame, srcRect, bounds, framePaint)
+        } else {
+            textMid(c, "Bản đồ đang tải", bounds.centerX(),
+                bounds.centerY(), 24f, MUTED)
+        }
+        val credit = "© OpenMapTiles · © OpenStreetMap contributors"
+        val font = 12f.coerceAtMost(width / 25f).coerceAtLeast(9f)
+        tp.typeface = Typeface.DEFAULT
+        tp.textSize = font
+        val left = bounds.left + 8f
+        val base = bounds.bottom - 8f
+        val bgWidth = tp.measureText(credit).coerceAtMost(width - 16f)
+        val bg = RectF(left - 4f, base - font * 1.25f,
+            left + bgWidth + 4f, base + 4f)
+        bubble(c, bg)
+        text(c, credit, left, base, font, Color.WHITE,
+            maxW = width - 16f)
+    }
+
     // ---------- bố cục tự động ngang / dọc ----------
 
     fun render(c: Canvas, cw: Int, ch: Int, st: UiState) {

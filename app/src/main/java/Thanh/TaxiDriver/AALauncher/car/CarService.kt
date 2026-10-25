@@ -418,7 +418,7 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 signs = if (gpsReady) maps.signsState else SignsState.EMPTY,
                 settings = currentSettings
             )
-            renderer.render(canvas, surfaceState.width,
+            renderer.renderNavigationSurface(canvas, surfaceState.width,
                 surfaceState.height, st)
         } catch (e: Exception) {
             logErr("CarService:draw", e)
