@@ -992,7 +992,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         map = m
         m.uiSettings.isCompassEnabled = false
         m.uiSettings.isLogoEnabled = false
-        m.uiSettings.isAttributionEnabled = false
+        m.uiSettings.isAttributionEnabled = true
         m.uiSettings.setAllGesturesEnabled(false)
         m.setPadding(0, (frameH * 0.46f).toInt(), 0, 0)
         m.moveCamera(

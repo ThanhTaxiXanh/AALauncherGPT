@@ -256,27 +256,29 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         for (ep in ENDPOINTS) {
             try {
                 val c = URL(ep).openConnection() as HttpURLConnection
-                c.instanceFollowRedirects = true
-                c.requestMethod = "POST"
-                c.connectTimeout = 8000
-                c.readTimeout = 30000
-                c.doOutput = true
-                c.setRequestProperty("User-Agent", "CarTaxiLauncher/0.1 (Android)")
-                c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                c.setRequestProperty("Accept", "application/json")
-                c.outputStream.use { it.write(body) }
-                val code = c.responseCode
-                if (code != 200) {
+                try {
+                    c.instanceFollowRedirects = true
+                    c.requestMethod = "POST"
+                    c.connectTimeout = 8000
+                    c.readTimeout = 30000
+                    c.doOutput = true
+                    c.setRequestProperty("User-Agent", "CarTaxiLauncher/0.1 (Android)")
+                    c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                    c.setRequestProperty("Accept", "application/json")
+                    c.outputStream.use { it.write(body) }
+                    val code = c.responseCode
+                    if (code != 200) throw IllegalStateException("HTTP $code")
+                    // Enforce the cap during streaming, before allocating unbounded JSON.
+                    val s = c.inputStream.bufferedReader(Charsets.UTF_8).use {
+                        BoundedOverpassBody.read(it, MAX_RESPONSE_CHARS)
+                    }
+                    val json = JSONObject(s)
+                    if (json.has("remark")) throw IllegalStateException("Overpass query incomplete")
+                    if (!json.has("elements")) throw IllegalStateException("Overpass returned no elements array")
+                    return s
+                } finally {
                     c.disconnect()
-                    throw IllegalStateException("HTTP $code")
                 }
-                val s = c.inputStream.bufferedReader().use { it.readText() }
-                c.disconnect()
-                if (s.length > MAX_RESPONSE_CHARS) throw IllegalStateException("Overpass response too large")
-                val json = JSONObject(s)
-                if (json.has("remark")) throw IllegalStateException("Overpass query incomplete")
-                if (!json.has("elements")) throw IllegalStateException("Overpass returned no elements array")
-                return s
             } catch (e: Exception) {
                 last = e
             }

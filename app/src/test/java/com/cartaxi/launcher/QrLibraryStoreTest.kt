@@ -46,6 +46,28 @@ class QrLibraryStoreTest {
         assertEquals("legacy", QrLibraryStore(dir).current()?.id)
     }
 
+    @Test fun corruptedMirrorIsRestoredFromValidatedCatalogAfterRestart() = fixture { dir, store ->
+        val selected = store.add("Ready", sample)
+        val mirror = File(dir, "qr.png")
+        val corrupted = ByteArray(sample.size) { 42 }
+        mirror.writeBytes(corrupted)
+        assertArrayEquals(corrupted, mirror.readBytes())
+        val restarted = QrLibraryStore(dir)
+        assertEquals(selected.id, restarted.current()?.id)
+        assertArrayEquals(sample, mirror.readBytes())
+        assertArrayEquals(sample, restarted.fileFor(selected.id)!!.readBytes())
+    }
+
+    @Test fun ghostMirrorFromInterruptedDeleteIsCleanedAfterRestart() = fixture { dir, store ->
+        val selected = store.add("To remove", sample)
+        assertTrue(store.remove(selected.id))
+        File(dir, "qr.png").writeBytes(sample)
+        assertTrue(File(dir, "qr.png").exists())
+        val restarted = QrLibraryStore(dir)
+        assertTrue(restarted.entries().isEmpty())
+        assertFalse(File(dir, "qr.png").exists())
+    }
+
     @Test fun renameAndSelectionPersistAfterRestart() = fixture { dir, store ->
         val a = store.add("A", sample)
         val b = store.add("B", sample)

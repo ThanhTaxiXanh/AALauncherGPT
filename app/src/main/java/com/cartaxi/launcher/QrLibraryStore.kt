@@ -30,6 +30,9 @@ class QrLibraryStore(
     private val selectedMirror = File(root, "qr.png")
     private val imageLimitBytes = 10_000_000
     private val maxEntries = 30
+    // A past process can die between writing index.json and the legacy
+    // dashboard mirror. Reconcile once on first validated catalog read.
+    private var mirrorChecked = false
 
     private data class Catalog(val selectedId: String?, val items: List<QrLibraryEntry>)
 
@@ -60,6 +63,8 @@ class QrLibraryStore(
             save(Catalog(old.selectedId ?: id, old.items + item))
         } catch (e: Exception) {
             target.delete()
+            if (old.selectedId == null) selectedMirror.delete()
+            mirrorChecked = false
             throw e
         }
         return item
@@ -72,8 +77,15 @@ class QrLibraryStore(
         if (old.selectedId == id) return
         val bytes = File(directory, item.fileName).readBytes()
         validatePng(bytes)
-        atomicWrite(selectedMirror, bytes)
-        save(old.copy(selectedId = id))
+        try {
+            atomicWrite(selectedMirror, bytes)
+            save(old.copy(selectedId = id))
+        } catch (e: Exception) {
+            // Recover old selected QR if index write fails.
+            mirrorChecked = false
+            runCatching { read() }
+            throw e
+        }
     }
 
     @Synchronized fun rename(id: String, title: String) {
@@ -90,18 +102,24 @@ class QrLibraryStore(
         val remaining = old.items.filterNot { it.id == id }
         val selected = if (old.selectedId == id) remaining.firstOrNull()?.id
             else old.selectedId
-        if (selected != old.selectedId) {
-            if (selected == null) {
-                // Removing the last entry is explicit user action.
-                selectedMirror.delete()
-            } else {
-                val img = remaining.first { it.id == selected }
-                val data = File(directory, img.fileName).readBytes()
-                validatePng(data)
-                atomicWrite(selectedMirror, data)
+        try {
+            if (selected != old.selectedId) {
+                if (selected == null) {
+                    // Removing the last entry is explicit user action.
+                    selectedMirror.delete()
+                } else {
+                    val img = remaining.first { it.id == selected }
+                    val data = File(directory, img.fileName).readBytes()
+                    validatePng(data)
+                    atomicWrite(selectedMirror, data)
+                }
             }
+            save(Catalog(selected, remaining))
+        } catch (e: Exception) {
+            mirrorChecked = false
+            runCatching { read() }
+            throw e
         }
-        save(Catalog(selected, remaining))
         File(directory, item.fileName).delete()
         return true
     }
@@ -169,7 +187,26 @@ class QrLibraryStore(
             selected != null && items.any { it.id == selected }) {
             "Mã QR đang chọn không có trong thư viện."
         }
-        return Catalog(selected, items)
+        val catalog = Catalog(selected, items)
+        if (!mirrorChecked) {
+            // If a prior process died after mirroring but before committing
+            // the index, restore the selected image from the authoritative
+            // validated catalog, without modifying any saved QR originals.
+            val expected = selected?.let {
+                File(directory, items.first { item -> item.id == it }.fileName).readBytes()
+            }
+            if (expected == null) {
+                if (selectedMirror.exists()) check(selectedMirror.delete()) {
+                    "Không khôi phục được ảnh QR đã xóa."
+                }
+            } else if (!selectedMirror.isFile ||
+                !selectedMirror.readBytes().contentEquals(expected)) {
+                validatePng(expected)
+                atomicWrite(selectedMirror, expected)
+            }
+            mirrorChecked = true
+        }
+        return catalog
     }
 
     private fun save(catalog: Catalog) {

@@ -24,10 +24,10 @@ data class CalEvent(
 data class EventLine(val text: String, val countdown: String, val urgent: Boolean, val red: Boolean)
 
 object Events {
-    fun parse(raw: String?): List<CalEvent> {
+    /** Strict path for write guards; tolerant display parsing remains separate. */
+    internal fun parseStrict(raw: String?): List<CalEvent> {
         if (raw.isNullOrBlank()) return emptyList()
-        return try {
-            val arr = JSONArray(raw)
+        val arr = JSONArray(raw)
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONObject(i)
                 CalEvent(
@@ -36,10 +36,10 @@ object Events {
                     leapMonth = o.optBoolean("leapMonth", false)
                 )
             }
-        } catch (e: Exception) {
-            emptyList()
-        }
     }
+
+    fun parse(raw: String?): List<CalEvent> =
+        try { parseStrict(raw) } catch (_: Exception) { emptyList() }
 
     fun load(ctx: Context): List<CalEvent> =
         parse(ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE).getString("events", ""))
@@ -50,8 +50,12 @@ object Events {
         val prefs = ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
         val original = prefs.getString("events", null)
         if (!original.isNullOrBlank()) {
-            require(runCatching { JSONArray(original) }.isSuccess) {
-                "Không thể lưu: dữ liệu sự kiện cũ bị lỗi."
+            try {
+                parseStrict(original)
+            } catch (e: Exception) {
+                throw IllegalArgumentException(
+                    "Không thể lưu: bản ghi sự kiện cũ bị lỗi.", e
+                )
             }
         }
         require(list.size <= 250 && list.map { it.id }.distinct().size == list.size)

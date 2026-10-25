@@ -235,6 +235,20 @@ class LauncherRenderer {
             framePaint.alpha = 255
             c.drawBitmap(f, srcRect, m, framePaint)
             lastMapDst = m
+            // The map is captured from a VirtualDisplay: credit must remain
+            // visible on the displayed frame, not just in MapLibre controls.
+            val credit = "© OpenMapTiles · © OpenStreetMap contributors"
+            val font = maxOf(9f, minOf(12f, m.width() / 52f))
+            val left = m.left + 7f
+            val base = m.bottom - 7f
+            tp.typeface = Typeface.DEFAULT
+            tp.textSize = font
+            val labelW = minOf(tp.measureText(credit), m.width() - 14f)
+            val creditBg = RectF(left - 3f, base - font * 1.05f,
+                left + labelW + 5f, base + 3f)
+            bubble(c, creditBg)
+            text(c, credit, left, base, font, Color.WHITE,
+                false, Paint.Align.LEFT, m.width() - 18f)
         } else {
             textMid(c, "Bản đồ", m.centerX(), m.centerY() - 14f * k, 44f * k, MUTED, true)
             textMid(c, st.mapsStatus, m.centerX(), m.centerY() + 34f * k, maxOf(12f, 16f * k), ACCENT, false, m.width() * 0.85f)
