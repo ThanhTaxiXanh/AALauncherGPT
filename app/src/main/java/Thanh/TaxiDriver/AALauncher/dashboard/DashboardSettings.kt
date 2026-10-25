@@ -22,7 +22,9 @@ data class DashboardSettings(
     val showPersonalReportsOnMap: Boolean = false,
     val layoutPresetId: String = "classic",
     val useCustomLayout: Boolean = false,
-    val customLayout: DashboardLayout? = null
+    val customLayout: DashboardLayout? = null,
+    /** Development-only Android Auto custom tile preview. Never used for release. */
+    val experimentalCarDashboard: Boolean = false
 ) {
     init {
         require(DashboardLayouts.byId(layoutPresetId) != null) {
@@ -65,6 +67,7 @@ internal object DashboardSettingsCodec {
             showPersonalReportsOnMap = bool("showPersonalReportsOnMap", false),
             layoutPresetId = obj.optString("layoutPresetId", "classic"),
             useCustomLayout = bool("useCustomLayout", false),
+            experimentalCarDashboard = bool("experimentalCarDashboard", false),
             customLayout = if (obj.has("customLayout") && !obj.isNull("customLayout"))
                 DashboardLayoutCodec.read(obj.getJSONArray("customLayout")) else null
         )
@@ -80,6 +83,7 @@ internal object DashboardSettingsCodec {
         .put("showPersonalReportsOnMap", value.showPersonalReportsOnMap)
         .put("layoutPresetId", value.layoutPresetId)
         .put("useCustomLayout", value.useCustomLayout)
+        .put("experimentalCarDashboard", value.experimentalCarDashboard)
         .apply {
             value.customLayout?.let {
                 put("customLayout", DashboardLayoutCodec.write(it))

@@ -418,8 +418,16 @@ class LauncherScreen(ctx: CarContext, private val appCtx: Context) : Screen(ctx)
                 signs = if (gpsReady) maps.signsState else SignsState.EMPTY,
                 settings = currentSettings
             )
-            renderer.renderNavigationSurface(canvas, surfaceState.width,
-                surfaceState.height, st)
+            if ((appCtx.applicationInfo.flags and
+                    ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
+                currentSettings.experimentalCarDashboard) {
+                // DHU engineering preview only; noncompliant with NF-2 for release.
+                renderer.render(canvas, surfaceState.width,
+                    surfaceState.height, st)
+            } else {
+                renderer.renderNavigationSurface(canvas, surfaceState.width,
+                    surfaceState.height, st)
+            }
         } catch (e: Exception) {
             logErr("CarService:draw", e)
         } finally {

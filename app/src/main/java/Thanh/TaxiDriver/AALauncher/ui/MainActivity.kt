@@ -306,9 +306,55 @@ class MainActivity : Activity() {
         root.addView(saveTheme)
         addSettingsResetButton(root)
         addDashboardLayoutEditor(root)
+        addExperimentalCarDashboardControls(root)
     }
 
     // ---------- Phase 6: phone-only interactive 12x12 Layout Builder ----------
+    /** Only effective in debug APKs with the development CarService. */
+    private fun addExperimentalCarDashboardControls(root: LinearLayout) {
+        root.addView(TextView(this).apply {
+            text = "Android Auto · Dashboard đa ô (chỉ bản debug)"
+            textSize = 18f
+            setPadding(0, pad, 0, 0)
+        })
+        root.addView(TextView(this).apply {
+            text = "Bản thử nghiệm DHU khi xe đang đỗ: dùng đúng 8 preset và bố cục " +
+                "tùy chỉnh đã lưu ở trên. QR/Lịch không được phép trên Navigation " +
+                "Surface của ứng dụng phát hành chính thức. Tắt khi lái xe."
+            textSize = 13f
+        })
+        if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
+            root.addView(TextView(this).apply {
+                text = "Chế độ này không có trong bản release."
+            })
+            return
+        }
+        val enabled = CheckBox(this).apply {
+            text = "Thử Dashboard đa ô trên Android Auto DHU (chỉ khi xe đỗ)"
+            isChecked = runCatching {
+                settingsRepository.read().experimentalCarDashboard
+            }.getOrDefault(false)
+        }
+        root.addView(enabled)
+        root.addView(Button(this).apply {
+            text = "Lưu chế độ thử nghiệm Android Auto"
+            setOnClickListener {
+                try {
+                    settingsRepository.change {
+                        it.copy(experimentalCarDashboard = enabled.isChecked)
+                    }
+                    Toast.makeText(this@MainActivity,
+                        "Đã lưu. Dashboard Android Auto debug sẽ cập nhật.",
+                        Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    logErr("MainActivity:carDashboardPreview", e)
+                    Toast.makeText(this@MainActivity, "Không lưu được tùy chọn.",
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        })
+    }
+
     private fun addDashboardLayoutEditor(root: LinearLayout) {
         root.addView(TextView(this).apply {
             text = "Phase 6 · Dashboard Layout Builder"

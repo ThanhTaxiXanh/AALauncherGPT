@@ -49,6 +49,11 @@ def evaluate(root: pathlib.Path) -> dict[str, object]:
     info = audit(debug, car, renderer)
     info["production_navigation_declared"] = declared_navigation(main)
     info["debug_navigation_declared"] = info["navigation_category"]
+    info["experimental_multitile_debug_only"] = (
+        "currentSettings.experimentalCarDashboard" in car
+        and "ApplicationInfo.FLAG_DEBUGGABLE" in car
+        and "renderer.render(" in car
+    )
     info["debug_only_car_service"] = (
         not declared_navigation(main)
         and "android:name=\".car.CarService\"" not in main
@@ -67,6 +72,7 @@ def main() -> int:
     print(json.dumps(result, indent=2, sort_keys=True))
     isolated = bool(
         result["debug_only_car_service"] and
+        result["experimental_multitile_debug_only"] and
         result["nf2_map_only_surface"] and
         result["release_host_validator_restricted"])
     if args.audit:

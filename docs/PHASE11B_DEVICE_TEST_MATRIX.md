@@ -75,3 +75,14 @@ Phone and debug DHU functional acceptance, R01 pass, no P0 data loss
 or crashes; approved production release signer; chosen Android Auto
 product category (phone-only release until NF-1..NF-7). A signed release
 must not be published solely on the basis of a green debug CI.
+
+## Requested screenshot-like layout — debug-only prototype
+
+The phone Configuration Center exposes an opt-in experimental Android Auto
+multi-tile preview in **debug builds only**. It uses Phase 6's same eight
+presets, persisted layout tree, calendar and selected QR. The existing
+Android Auto debug `NavigationTemplate` Surface may render the full
+Dashboard when the switch is enabled. This is **NOT compliant with NF-2**,
+not appropriate for driving, not eligible for Google Play Android Auto
+publication, and is not included in production's CarService manifest.
+The switch defaults OFF, so debug starts on the map-only surface.
