@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 11A: fail-closed Android Auto release compliance review gate.
-
-This is a static *triage* gate, not Google certification. A release also
-requires a documented, manual DHU/head-unit review. No PR/CI checkbox can
-automatically establish NF-1/NF-2 regulatory compliance.
-"""
+"""Fail-closed review of Android Auto variants, not certification."""
 import argparse
 import json
 import pathlib
@@ -13,74 +8,81 @@ import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ANDROID = "{http://schemas.android.com/apk/res/android}"
+NAV = "androidx.car.app.category.NAVIGATION"
+
+
+def declared_navigation(manifest: str) -> bool:
+    root = ET.fromstring(manifest)
+    return any(
+        node.get(ANDROID + "name") == NAV
+        for node in root.findall(".//service/intent-filter/category")
+    )
 
 
 def audit(manifest: str, car: str, renderer: str) -> dict[str, bool]:
-    root = ET.fromstring(manifest)
-    nav = False
-    for service in root.findall(".//service"):
-        for cat in service.findall(".//category"):
-            if cat.get(ANDROID + "name") == "androidx.car.app.category.NAVIGATION":
-                nav = True
-
-    # Conservative source guard: APIs are only indicators, not a proof of
-    # functional routing, safe driving UX or Google Play acceptance.
-    routing_indicators = all(needle in car for needle in (
-        "NavigationManager", "navigationStarted(", "Trip.Builder"
-    ))
-    car_uses_map_surface = "renderer.renderNavigationSurface(" in car
+    nav = declared_navigation(manifest)
+    routing = all(x in car for x in (
+        "NavigationManager", "navigationStarted(", "Trip.Builder"))
+    render_nav = "renderer.renderNavigationSurface(" in car
     map_only = False
     if "fun renderNavigationSurface(" in renderer:
-        area = renderer.split("fun renderNavigationSurface(", 1)[1]
-        area = area.split("// ----------", 1)[0]
-        map_only = all(needle not in area for needle in (
-            "drawCalendar(", "drawQr(", "drawIcons(", "drawSigns("
-        ))
-    host_restricted = ("FLAG_DEBUGGABLE" in car and
-                       "ALLOW_ALL_HOSTS_VALIDATOR" in car)
+        segment = renderer.split("fun renderNavigationSurface(", 1)[1]
+        segment = segment.split("// ----------", 1)[0]
+        map_only = not any(x in segment for x in (
+            "drawCalendar(", "drawQr(", "drawIcons(", "drawSigns("))
+    restricted = ("FLAG_DEBUGGABLE" in car and
+                  "ALLOW_ALL_HOSTS_VALIDATOR" in car)
     return {
         "navigation_category": nav,
-        "nf1_routing_indicators_present": routing_indicators,
-        "nf2_map_only_surface": car_uses_map_surface and map_only,
-        "release_host_validator_restricted": host_restricted,
+        "nf1_routing_indicators_present": routing,
+        "nf2_map_only_surface": render_nav and map_only,
+        "release_host_validator_restricted": restricted
     }
 
 
-def evaluate(root: pathlib.Path) -> dict[str, bool]:
-    source = root / "app/src/main"
-    manifest = (source / "AndroidManifest.xml").read_text(encoding="utf-8")
-    car = (source / "java/Thanh/TaxiDriver/AALauncher/car/CarService.kt").read_text(encoding="utf-8")
-    renderer = (source / "java/Thanh/TaxiDriver/AALauncher/dashboard/LauncherRenderer.kt").read_text(encoding="utf-8")
-    return audit(manifest, car, renderer)
+def evaluate(root: pathlib.Path) -> dict[str, object]:
+    path = root / "app/src"
+    main = (path / "main/AndroidManifest.xml").read_text(encoding="utf-8")
+    debug = (path / "debug/AndroidManifest.xml").read_text(encoding="utf-8")
+    car = (path / "main/java/Thanh/TaxiDriver/AALauncher/car/CarService.kt").read_text(encoding="utf-8")
+    renderer = (path / "main/java/Thanh/TaxiDriver/AALauncher/dashboard/LauncherRenderer.kt").read_text(encoding="utf-8")
+    info = audit(debug, car, renderer)
+    info["production_navigation_declared"] = declared_navigation(main)
+    info["debug_navigation_declared"] = info["navigation_category"]
+    info["debug_only_car_service"] = (
+        not declared_navigation(main)
+        and "android:name=\".car.CarService\"" not in main
+        and "android:name=\".car.CarService\"" in debug
+    )
+    return info
 
 
 def main() -> int:
-    args = argparse.ArgumentParser()
-    mode = args.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--audit", action="store_true")
-    mode.add_argument("--release", action="store_true")
-    flags = args.parse_args()
-    found = evaluate(ROOT)
-    print(json.dumps(found, indent=2, ensure_ascii=False, sort_keys=True))
-    compliant_sources = (
-        found["nf2_map_only_surface"]
-        and found["release_host_validator_restricted"]
-        and (not found["navigation_category"] or found["nf1_routing_indicators_present"])
-    )
-    print("Phase 11A code audit:", "no known source flags" if compliant_sources else
-          "RELEASE NOT READY — Navigation NF-1, NF-2 or host issue remains")
-    if flags.audit:
-        print("Debug verification continues. Manual car-host review is outstanding.")
+    parser = argparse.ArgumentParser()
+    flags = parser.add_mutually_exclusive_group(required=True)
+    flags.add_argument("--audit", action="store_true")
+    flags.add_argument("--release", action="store_true")
+    args = parser.parse_args()
+    result = evaluate(ROOT)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    isolated = bool(
+        result["debug_only_car_service"] and
+        result["nf2_map_only_surface"] and
+        result["release_host_validator_restricted"])
+    if args.audit:
+        if not isolated:
+            print("ERROR: development-only Navigation isolation regressed", file=sys.stderr)
+            return 1
+        print("PASS: development-only CarService isolated. NF-1 remains unimplemented.")
         return 0
 
-    # No automatic permission to publish from a passing source heuristic.
-    # Require formal documented human review and an explicit gate revision.
-    # Currently blocked even if the source heuristic passes.
-    print("BLOCKED: Android Auto publication requires a compliant category, "
-          "real navigation where applicable, DHU/host testing and approval. "
-          "Phase 11A release gate is intentionally closed.", file=sys.stderr)
+    # Automatic official publication still requires Phase 11C signing,
+    # host policy review and explicit human approval. Do not auto-publish.
+    print("BLOCKED: Phase 11C release approval and physical device tests "
+          "are not complete. Official Android Auto Navigation is NOT included "
+          "in release manifest.", file=sys.stderr)
     return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

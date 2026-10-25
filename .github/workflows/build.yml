@@ -38,8 +38,20 @@ jobs:
         run: gradle :app:testDebugUnitTest --no-daemon --console=plain
       - name: Compile Android instrumentation smoke tests (no emulator execution)
         run: gradle :app:assembleDebugAndroidTest --no-daemon --console=plain
+      - name: Compile phone-only release manifest (no signing or publication)
+        run: gradle :app:processReleaseMainManifest --no-daemon --console=plain
       - name: Phase 11A Android Lint
         run: gradle :app:lintDebug --no-daemon --console=plain
+      - name: Verify release manifest has no noncompliant Navigation service
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=$(find app/build/intermediates/merged_manifest/release -name AndroidManifest.xml -type f | head -1)
+          test -n "$release"
+          python3 scripts/check_merged_manifests.py "$release" --release
+          debug=$(find app/build/intermediates/merged_manifest/debug -name AndroidManifest.xml -type f | head -1)
+          test -n "$debug"
+          python3 scripts/check_merged_manifests.py "$debug" --debug
       - name: Phase 11A compliance audit (debug may continue)
         run: python3 scripts/phase11a_car_policy_gate.py --audit
       - name: Unit tests for Phase 11A compliance audit
