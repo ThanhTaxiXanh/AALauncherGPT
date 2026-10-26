@@ -35,7 +35,7 @@ internal class BundledVietnamOsm(private val ctx: Context) {
             try {
                 val dig = MessageDigest.getInstance("SHA-256")
                 var bytes = 0L
-                ctx.assets.open("osm/vietnam_signs.sqlite.gz").use { file ->
+                ctx.assets.open("osm/vietnam_signs.sqlite.gzbin").use { file ->
                     GZIPInputStream(file.buffered()).use { gz ->
                         FileOutputStream(pending).use { out ->
                             val buf = ByteArray(64 * 1024)

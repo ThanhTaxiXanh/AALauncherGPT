@@ -146,14 +146,14 @@ jobs:
           sha256sum "$RUNNER_TEMP/osm/extract/vietnam_signs.sqlite" | cut -d' ' -f1 \
             > app/src/debug/assets/osm/vietnam_signs.sha256
           gzip -n -9 -c "$RUNNER_TEMP/osm/extract/vietnam_signs.sqlite" \
-            > app/src/debug/assets/osm/vietnam_signs.sqlite.gz
+            > app/src/debug/assets/osm/vietnam_signs.sqlite.gzbin
           cp "$RUNNER_TEMP/osm/extract/osm_stats.json" app/src/debug/assets/osm/vietnam_stats.json
           python3 - <<'PY'
           import json,pathlib
           root=pathlib.Path('app/src/debug/assets/osm')
           x=json.loads((root/'vietnam_stats.json').read_text())
           assert x['sign_nodes']>0 and x['road_speed_ways']>0
-          assert (root/'vietnam_signs.sqlite.gz').stat().st_size < 120_000_000
+          assert (root/'vietnam_signs.sqlite.gzbin').stat().st_size < 120_000_000
           print('OSM source counts:',x)
           PY
       - name: Build clean debug APK containing nationwide OSM dataset
@@ -177,7 +177,7 @@ jobs:
           asset_dir=pathlib.Path("app/src/debug/assets/osm")
           with zipfile.ZipFile(apk) as z:
               names=set(z.namelist())
-              expected={"assets/osm/vietnam_signs.sqlite.gz",
+              expected={"assets/osm/vietnam_signs.sqlite.gzbin",
                         "assets/osm/vietnam_signs.sha256",
                         "assets/osm/vietnam_stats.json"}
               missing=expected-names
