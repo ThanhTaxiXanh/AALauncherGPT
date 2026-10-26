@@ -70,3 +70,14 @@ after a successful workflow.
 
 Android Auto remains debug-only per Phase 11A/11B. CPU/RAM/latency
 device profiling for GPS matching and road graph is still deferred.
+
+
+## V3.1 size control
+
+An attempted full-national context build on 2026-10-26 produced about 2.78
+million road ways, 29.47 million geometry points and a 1.485 GB SQLite file.
+That design was rejected for APK distribution. V3.1 uses a two-pass corridor:
+first index the cells around explicit speed-tagged motor roads; then retain
+only speed ways plus motor roads intersecting those cells. This keeps the
+safety property needed for parallel-road matching without embedding unrelated
+roads hundreds of kilometres away.

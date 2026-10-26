@@ -63,7 +63,7 @@ internal class BundledVietnamOsm(private val ctx: Context) {
                                 val count = gz.read(buf)
                                 if (count < 0) break
                                 bytes += count
-                                require(bytes <= 800_000_000L) {
+                                require(bytes <= 400_000_000L) {
                                     "OSM bundle exceeds 800 MB unpacked"
                                 }
                                 out.write(buf, 0, count)

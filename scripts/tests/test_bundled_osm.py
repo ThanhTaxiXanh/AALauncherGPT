@@ -1,43 +1,39 @@
-"""Offline OSM V3 bundle regression without fetching the national PBF."""
-import ast
-import pathlib
-import unittest
-
+"""Offline OSM V3.1 bundle regression without fetching the national PBF."""
+import ast, pathlib, unittest
 SCRIPT=pathlib.Path(__file__).resolve().parents[1]/"build_vietnam_osm_bundle.py"
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW=ROOT/".github/workflows/build.yml"
 BUNDLE=ROOT/"app/src/main/java/Thanh/TaxiDriver/AALauncher/signs/BundledVietnamOsm.kt"
 
 class BundledOsmStaticTests(unittest.TestCase):
-    def test_builder_has_full_road_context_geometry_rtree(self):
+    def test_builder_has_compact_road_context_corridor(self):
         text=SCRIPT.read_text(encoding="utf-8")
         ast.parse(text)
+        self.assertIn("class SpeedCorridor",text)
+        self.assertIn("speed_way_ids=set()",text)
+        self.assertIn("corridor=set()",text)
+        self.assertIn("way_intersects_corridor",text)
         self.assertIn("CREATE TABLE road_context(",text)
         self.assertIn("CREATE VIRTUAL TABLE road_context_rtree USING rtree",text)
-        self.assertIn("has_speed_tag INTEGER NOT NULL",text)
-        self.assertIn('{"type":"LineString","coordinates":points}',text)
 
-    def test_context_is_halo_bounded_not_whole_national_network(self):
+    def test_context_is_not_entire_national_network(self):
         text=SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("class SpeedAreaCollector",text)
-        self.assertIn("CONTEXT_HALO_DEG = 0.001",text)
-        self.assertIn("def near_speed_area(box):",text)
-        self.assertIn("if not speed_tag and not near_speed_area(box):",text)
-        self.assertIn('assert stats["road_context_ways"] < 1_000_000',text)
+        self.assertIn("if not speed_tagged and not way_intersects_corridor",text)
+        self.assertIn('counts["context_only_ways"]+=1',text)
+        self.assertIn('"road_context_only_ways"',text)
 
-    def test_supported_road_classes_exclude_non_driving_objects(self):
+    def test_speed_ways_are_always_kept(self):
+        text=SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("speed_tagged = way.id in speed_way_ids",text)
+        self.assertIn('counts["ways_speed_tagged"]+=1',text)
+
+    def test_supported_motor_types_exclude_non_driving_objects(self):
         text=SCRIPT.read_text(encoding="utf-8")
         road_types=text.split("ROAD_TYPES =",1)[1].split("}",1)[0]
-        for excluded in ('"construction"','"proposed"','"track"','"path"'):
-            self.assertNotIn(excluded,road_types)
+        for bad in ('"construction"','"proposed"','"track"','"path"'):
+            self.assertNotIn(bad,road_types)
 
-    def test_speed_tag_presence_is_separate_from_numeric_speed(self):
-        text=SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("def has_speed_tag(tags):",text)
-        self.assertIn('counts["context_only_ways"] += 1',text)
-        self.assertIn('counts["ways_speed_tagged"] += 1',text)
-
-    def test_workflow_prefilters_all_supported_motor_roads(self):
+    def test_workflow_prefilters_motor_road_context(self):
         workflow=WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("w/highway=motorway,trunk,primary,secondary,tertiary",workflow)
 
@@ -47,5 +43,5 @@ class BundledOsmStaticTests(unittest.TestCase):
         self.assertIn("JOIN road_context AS r",text)
         self.assertIn("BundledRoadContext",text)
 
-if __name__ == '__main__':
+if __name__=="__main__":
     unittest.main()
