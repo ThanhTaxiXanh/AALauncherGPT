@@ -88,6 +88,7 @@ def main():
     class Extract(osmium.SimpleHandler):
         def node(self,node):
             if not node.location.valid(): return
+            if len(node.tags) == 0: return
             tags = dict(node.tags)
             classified = sign_type(tags)
             if not classified: return

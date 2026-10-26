@@ -115,13 +115,32 @@ jobs:
             -o "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf"
           test "$(stat -c '%s' "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf")" -gt 100000000
           sha256sum "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf" > "$RUNNER_TEMP/osm/source.sha256"
+      - name: Install native Osmium PBF tag filter
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+      - name: Pre-filter actual speed ways and sign/camera OSM nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          osmium tags-filter "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf" \
+            'n/traffic_sign' 'n/traffic_sign:forward' 'n/traffic_sign:backward' \
+            'n/maxspeed' 'n/enforcement' 'n/traffic_calming' \
+            'n/highway=speed_camera,stop,give_way,traffic_signals' \
+            'n/railway=level_crossing' \
+            'w/maxspeed' 'w/maxspeed:forward' 'w/maxspeed:backward' \
+            'w/maxspeed:conditional' \
+            --output "$RUNNER_TEMP/osm/filtered-speed-signs.osm.pbf" \
+            --overwrite
+          test -s "$RUNNER_TEMP/osm/filtered-speed-signs.osm.pbf"
+          du -h "$RUNNER_TEMP/osm/"*.pbf
       - name: Extract real OSM signs, cameras and road speeds to bundled SQLite
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/osm/extract" app/src/debug/assets/osm
           python3 scripts/build_vietnam_osm_bundle.py \
-            "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf" \
+            "$RUNNER_TEMP/osm/filtered-speed-signs.osm.pbf" \
             --output "$RUNNER_TEMP/osm/extract/vietnam_signs.sqlite" \
             --stats "$RUNNER_TEMP/osm/extract/osm_stats.json"
           sha256sum "$RUNNER_TEMP/osm/extract/vietnam_signs.sqlite" | cut -d' ' -f1 \
