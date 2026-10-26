@@ -1,0 +1,111 @@
+{
+  "version": 0.6,
+  "generator": "synthetic Overpass-compatible fixture for deterministic CI tests",
+  "elements": [
+    {
+      "type": "way",
+      "id": 100,
+      "nodes": [
+        1,
+        2
+      ],
+      "geometry": [
+        {
+          "lat": 0,
+          "lon": -0.0009
+        },
+        {
+          "lat": 0,
+          "lon": 0
+        }
+      ],
+      "tags": {
+        "highway": "residential",
+        "oneway": "yes",
+        "maxspeed": "50"
+      }
+    },
+    {
+      "type": "way",
+      "id": 200,
+      "nodes": [
+        2,
+        3
+      ],
+      "geometry": [
+        {
+          "lat": 0,
+          "lon": 0
+        },
+        {
+          "lat": 0.0009,
+          "lon": 0
+        }
+      ],
+      "tags": {
+        "highway": "residential",
+        "oneway": "yes",
+        "maxspeed": "40",
+        "maxspeed:conditional": "30 @ (Mo-Fr 07:00-09:00)"
+      }
+    },
+    {
+      "type": "way",
+      "id": 300,
+      "nodes": [
+        2,
+        4
+      ],
+      "geometry": [
+        {
+          "lat": 0,
+          "lon": 0
+        },
+        {
+          "lat": -0.0009,
+          "lon": 0
+        }
+      ],
+      "tags": {
+        "highway": "residential",
+        "oneway": "yes",
+        "maxspeed": "60"
+      }
+    },
+    {
+      "type": "node",
+      "id": 302,
+      "lat": 0.00054,
+      "lon": 0,
+      "tags": {
+        "traffic_sign": "maxspeed[40]",
+        "direction": "S"
+      }
+    },
+    {
+      "type": "relation",
+      "id": 500,
+      "members": [
+        {
+          "type": "way",
+          "role": "from",
+          "ref": 100
+        },
+        {
+          "type": "node",
+          "role": "via",
+          "ref": 2
+        },
+        {
+          "type": "way",
+          "role": "to",
+          "ref": 300
+        }
+      ],
+      "tags": {
+        "type": "restriction",
+        "restriction": "no_right_turn"
+      }
+    }
+  ]
+}
