@@ -16,10 +16,13 @@ License: ODbL, © OpenStreetMap contributors.
 - Physical sign-like OSM *nodes*: traffic_sign, speed cameras, red-light
   enforcement, give-way, STOP, selected Vietnam traffic sign codes,
   speed nodes, warning and other explicitly tagged items.
-- Speed-tagged road *ways*: `maxspeed`, `maxspeed:forward`,
-  `maxspeed:backward`, `maxspeed:conditional`, OSM way ID,
-  highway class, road name, oneway and reference coordinate.
-  These rows are **road attributes, not physical roadside signs**.
+- Speed-tagged motor-road *ways* now store **full OSM LineString geometry**,
+  OSM way ID, highway class, road name, layer/bridge/tunnel level, oneway,
+  `maxspeed`, directional speeds and directional/normal conditional rules.
+  Railway, construction, proposed, path and track objects are excluded from
+  speed-road matching. These rows are **road attributes, not roadside signs**.
+- `road_speeds_rtree` indexes the way bounding boxes so Android reads only
+  a small GPS neighborhood before exact geometry matching.
 - Region `vn` and coordinate indices; source counts in
   `assets/osm/vietnam_stats.json` to verify the build extracted real
   data rather than using empty or sample features.
@@ -32,10 +35,20 @@ Existing user-imported `RegionalOsmStore` and personal sign reports
 remain separate. The nationwide OSM sign points are merged with user
 regional OSM markers in `NativeMap` with an upper bound per GPS area.
 
+For speed limits, nearby nationwide ways are loaded in a background worker.
+`OfflineSpeedLimitResolver` reuses `SpeedWayMatcher` with filtered GPS,
+heading and the full way geometry. Fresh live Overpass data wins; the bundled
+SQLite is a conservative offline fallback. GPS must be recent and <=12 m
+accuracy, known road names must agree, unnamed roads require a very close
+geometry match, and ambiguous parallel/crossing roads fail closed.
+
 This is an **APK-bundled offline sign/speed database**, not a complete
 offline map basemap (MapLibre's vector style may still require network)
-or an offline routable road graph. OSM coverage cannot be assumed
-complete, and local speed law/physical signage always takes precedence.
+or a complete offline routable road graph. It currently contains only
+speed-tagged motor-road ways, so the stricter name/distance gate is required
+to reduce false matches to nearby roads without speed tags. OSM coverage
+cannot be assumed complete, and physical signs/current law always take
+precedence.
 
 ## Important current scope
 

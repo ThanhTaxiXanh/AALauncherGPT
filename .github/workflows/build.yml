@@ -129,7 +129,8 @@ jobs:
             'n/highway=speed_camera,stop,give_way,traffic_signals' \
             'n/railway=level_crossing' \
             'w/maxspeed' 'w/maxspeed:forward' 'w/maxspeed:backward' \
-            'w/maxspeed:conditional' \
+            'w/maxspeed:conditional' 'w/maxspeed:forward:conditional' \
+            'w/maxspeed:backward:conditional' \
             --output "$RUNNER_TEMP/osm/filtered-speed-signs.osm.pbf" \
             --overwrite
           test -s "$RUNNER_TEMP/osm/filtered-speed-signs.osm.pbf"
@@ -153,6 +154,8 @@ jobs:
           root=pathlib.Path('app/src/debug/assets/osm')
           x=json.loads((root/'vietnam_stats.json').read_text())
           assert x['sign_nodes']>0 and x['road_speed_ways']>0
+          assert x['road_rtree_rows']==x['road_speed_ways']
+          assert x['road_geometry_points'] >= 2*x['road_speed_ways']
           assert (root/'vietnam_signs.sqlite.gzbin').stat().st_size < 120_000_000
           print('OSM source counts:',x)
           PY

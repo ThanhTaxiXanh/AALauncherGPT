@@ -10,6 +10,8 @@ import Thanh.TaxiDriver.AALauncher.gps.RoadSnapMatcher
 import Thanh.TaxiDriver.AALauncher.reports.TrafficReport
 import Thanh.TaxiDriver.AALauncher.reports.TrafficReportMapPolicy
 import Thanh.TaxiDriver.AALauncher.reports.TrafficReportStore
+import Thanh.TaxiDriver.AALauncher.signs.BundledSpeedRoad
+import Thanh.TaxiDriver.AALauncher.signs.OfflineSpeedLimitResolver
 import Thanh.TaxiDriver.AALauncher.signs.RoadSigns
 import Thanh.TaxiDriver.AALauncher.signs.SignsState
 
@@ -112,6 +114,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private val osmRegionsSrc = "ct-regional-osm-signs"
     private val regionDb = Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore(appCtx)
     private val nationalBundle = Thanh.TaxiDriver.AALauncher.signs.BundledVietnamOsm(appCtx)
+    private val offlineSpeedResolver = OfflineSpeedLimitResolver()
+    private var offlineSpeedRoads: List<BundledSpeedRoad> = emptyList()
+    private var lastOfflineSpeedFetchMs = -10_000L
+    private var offlineSpeedLoading = false
     private var regionMarkers: List<Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore.Marker> =
         emptyList()
     private var regionKey = Int.MIN_VALUE
@@ -291,6 +297,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         filteredGpsLat = Double.NaN
         filteredGpsLon = Double.NaN
         snapped = false
+        offlineSpeedRoads = emptyList()
+        offlineSpeedResolver.reset()
+        offlineSpeedLoading = false
+        lastOfflineSpeedFetchMs = -10_000L
         if (perfDebug) performance.reset(SystemClock.elapsedRealtime())
     }
 
@@ -743,6 +753,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             lastStreetMs = nowMs
             refreshStreet(nowMs)
         }
+        updateOfflineSpeedRoads()
         updateSigns()
         updatePersonalReports(nowMs)
         drawRegionalMarkers()
@@ -768,9 +779,28 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         if (!hasFix) return
         try {
             signs.request(tLat, tLon)
-            signsState = signs.state(
+            val liveState = signs.state(
                 filteredGpsLat, filteredGpsLon, tHeading, moving, lastAccuracyM, fixMs
             )
+            val offlineState = offlineSpeedResolver.state(
+                lat = filteredGpsLat,
+                lon = filteredGpsLon,
+                heading = tHeading,
+                moving = moving,
+                accuracyM = lastAccuracyM,
+                gpsFixMs = fixMs,
+                nowElapsedMs = SystemClock.elapsedRealtime(),
+                wallTimeMs = System.currentTimeMillis(),
+                streetName = streetName,
+                roads = offlineSpeedRoads
+            )
+            signsState = if (liveState.limit != null) liveState
+                else if (offlineState.limit != null) liveState.copy(
+                    limit = offlineState.limit,
+                    estimated = false,
+                    status = offlineState.status,
+                    roadWayId = offlineState.roadWayId
+                ) else liveState
             val near = signs.nearby(tLat, tLon, 600.0, 60)
             // Include sign type, label and limit: the same node can change meaning after refresh.
             // Check the style/source before comparing to avoid suppressing the first render.
@@ -796,6 +826,37 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             signsKey = key
         } catch (t: Throwable) {
             logErr("NativeMap:698", t)
+        }
+    }
+
+    /**
+     * Refresh nearby nationwide speed-way geometry away from the 33 ms map
+     * render loop. The R-Tree query is bounded and the resolver still performs
+     * exact geometry matching on the cached candidates.
+     */
+    private fun updateOfflineSpeedRoads() {
+        val elapsed = SystemClock.elapsedRealtime()
+        if (!hasFix) {
+            offlineSpeedRoads = emptyList()
+            offlineSpeedResolver.reset()
+            return
+        }
+        if (offlineSpeedLoading || elapsed - lastOfflineSpeedFetchMs < 1_500L) return
+        lastOfflineSpeedFetchMs = elapsed
+        offlineSpeedLoading = true
+        val qLat = tLat
+        val qLon = tLon
+        reportWorker.execute {
+            val roads = try {
+                nationalBundle.nearbySpeedRoads(qLat, qLon, 500.0, 180)
+            } catch (e: Exception) {
+                logErr("NativeMap:offlineSpeedRoads", e)
+                emptyList()
+            }
+            main.post {
+                offlineSpeedRoads = roads
+                offlineSpeedLoading = false
+            }
         }
     }
 
