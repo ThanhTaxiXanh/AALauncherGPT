@@ -156,14 +156,40 @@ jobs:
           assert (root/'vietnam_signs.sqlite.gz').stat().st_size < 120_000_000
           print('OSM source counts:',x)
           PY
-      - name: Build debug APK containing national OSM dataset
-        run: gradle :app:assembleDebug --no-daemon --console=plain
-      - name: Verify nationwide SQLite assets inside APK
+      - name: Build clean debug APK containing nationwide OSM dataset
         shell: bash
         run: |
           set -euo pipefail
-          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/osm/vietnam_signs.sqlite.gz'
-          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/osm/vietnam_signs.sha256'
+          # Generated source-set inputs were added after the checkout.
+          # Clean avoids restoring an APK/mergedAssets cached before extraction.
+          gradle :app:clean :app:assembleDebug --no-daemon --console=plain
+      - name: Verify nationwide SQLite assets and hashes inside APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          echo 'OSM-related ZIP paths:'
+          unzip -Z1 "$apk" | grep -Ei 'osm|vietnam' || true
+          python3 - <<'PY'
+          import hashlib, pathlib, zipfile
+          apk=pathlib.Path("app/build/outputs/apk/debug/app-debug.apk")
+          asset_dir=pathlib.Path("app/src/debug/assets/osm")
+          with zipfile.ZipFile(apk) as z:
+              names=set(z.namelist())
+              expected={"assets/osm/vietnam_signs.sqlite.gz",
+                        "assets/osm/vietnam_signs.sha256",
+                        "assets/osm/vietnam_stats.json"}
+              missing=expected-names
+              if missing:
+                  raise SystemExit("Missing bundled OSM assets: "+repr(sorted(missing)))
+              for name in expected:
+                  content=z.read(name)
+                  source=(asset_dir/pathlib.PurePosixPath(name).name).read_bytes()
+                  if hashlib.sha256(content).digest()!=hashlib.sha256(source).digest():
+                      raise SystemExit("APK asset differs from generated source: "+name)
+                  print(name, "verified",len(content),"bytes")
+          PY
       - name: Upload debug APK with nationwide Vietnam OSM and statistics
         uses: actions/upload-artifact@v4
         with:
