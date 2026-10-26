@@ -119,7 +119,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq osmium-tool
-      - name: Pre-filter actual speed ways and sign/camera OSM nodes
+      - name: Pre-filter motor-road context and sign/camera OSM nodes
         shell: bash
         run: |
           set -euo pipefail
@@ -128,9 +128,7 @@ jobs:
             'n/maxspeed' 'n/enforcement' 'n/traffic_calming' \
             'n/highway=speed_camera,stop,give_way,traffic_signals' \
             'n/railway=level_crossing' \
-            'w/maxspeed' 'w/maxspeed:forward' 'w/maxspeed:backward' \
-            'w/maxspeed:conditional' 'w/maxspeed:forward:conditional' \
-            'w/maxspeed:backward:conditional' \
+            'w/highway=motorway,trunk,primary,secondary,tertiary,unclassified,residential,living_street,service,motorway_link,trunk_link,primary_link,secondary_link,tertiary_link' \
             --output "$RUNNER_TEMP/osm/filtered-speed-signs.osm.pbf" \
             --overwrite
           test -s "$RUNNER_TEMP/osm/filtered-speed-signs.osm.pbf"
@@ -153,10 +151,10 @@ jobs:
           import json,pathlib
           root=pathlib.Path('app/src/debug/assets/osm')
           x=json.loads((root/'vietnam_stats.json').read_text())
-          assert x['sign_nodes']>0 and x['road_speed_ways']>0
-          assert x['road_rtree_rows']==x['road_speed_ways']
-          assert x['road_geometry_points'] >= 2*x['road_speed_ways']
-          assert (root/'vietnam_signs.sqlite.gzbin').stat().st_size < 120_000_000
+          assert x['sign_nodes']>0 and x['road_context_ways']>x['road_speed_ways']>0
+          assert x['road_rtree_rows']==x['road_context_ways']
+          assert x['road_geometry_points'] >= 2*x['road_context_ways']
+          assert (root/'vietnam_signs.sqlite.gzbin').stat().st_size < 350_000_000
           print('OSM source counts:',x)
           PY
       - name: Build clean debug APK containing nationwide OSM dataset

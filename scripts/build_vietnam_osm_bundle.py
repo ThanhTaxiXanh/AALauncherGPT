@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build nationwide OSM traffic-sign and road-speed SQLite from Geofabrik PBF.
+"""Build nationwide OSM traffic-sign and road-context SQLite from Geofabrik PBF.
 
+V3 stores every supported motor-road way, including roads without maxspeed.
+This prevents GPS matching from borrowing a speed limit from a nearby road.
 Requires pyosmium. Never fabricate speed limits, cameras, or sign positions.
-Road speed records contain full OSM way geometry for conservative GPS matching.
 """
 import argparse
 import collections
@@ -22,6 +23,9 @@ ROAD_TYPES = {"motorway","trunk","primary","secondary","tertiary",
               "unclassified","residential","living_street","service",
               "motorway_link","trunk_link","primary_link","secondary_link",
               "tertiary_link"}
+SPEED_TAGS = ("maxspeed","maxspeed:forward","maxspeed:backward",
+              "maxspeed:conditional","maxspeed:forward:conditional",
+              "maxspeed:backward:conditional")
 
 def speed_value(text):
     raw = (text or "").strip().lower()
@@ -53,7 +57,6 @@ def sign_type(tags):
                         ("school","school"),("w.201","curve"),
                         ("dangerous_curve","curve"),("railway_crossing","railway")):
         if match in sign: return kind, 0
-    # A way's maxspeed is NOT a physical sign; only explicit node tags here.
     sp = speed_value(tags.get("maxspeed", ""))
     if sp and (sign or tags.get("traffic_sign") or tags.get("highway") == "speed_limit"):
         return "speed", sp
@@ -65,24 +68,18 @@ def sign_type(tags):
 
 def oneway_value(tags):
     raw = (tags.get("oneway") or "").strip().lower()
-    if raw in ("yes", "true", "1"):
-        return 1
-    if raw == "-1":
-        return -1
-    if raw in ("no", "false", "0"):
-        return 0
-    if not raw and tags.get("junction") == "roundabout":
-        return 1
+    if raw in ("yes", "true", "1"): return 1
+    if raw == "-1": return -1
+    if raw in ("no", "false", "0"): return 0
+    if not raw and tags.get("junction") == "roundabout": return 1
     return 0 if not raw else 2
 
 def level_value(tags):
     try:
         return max(-20, min(20, int(tags.get("layer", "0"))))
     except ValueError:
-        if tags.get("bridge") and tags.get("bridge") != "no":
-            return 1
-        if tags.get("tunnel") and tags.get("tunnel") != "no":
-            return -1
+        if tags.get("bridge") and tags.get("bridge") != "no": return 1
+        if tags.get("tunnel") and tags.get("tunnel") != "no": return -1
         return 0
 
 def create_db(path):
@@ -91,14 +88,14 @@ def create_db(path):
     db.executescript("""
     PRAGMA journal_mode=DELETE;
     PRAGMA synchronous=OFF;
-    PRAGMA user_version=2;
+    PRAGMA user_version=3;
     CREATE TABLE regions(region TEXT PRIMARY KEY,updated_ms INTEGER NOT NULL,feature_count INTEGER NOT NULL);
     CREATE TABLE markers(region TEXT NOT NULL,id TEXT NOT NULL,lat REAL NOT NULL,lon REAL NOT NULL,
         type TEXT NOT NULL,label TEXT NOT NULL,speed_value INTEGER NOT NULL,
         source TEXT NOT NULL,osm_id TEXT NOT NULL,PRIMARY KEY(region,id));
     CREATE INDEX idx_region_lat_lon ON markers(lat,lon);
 
-    CREATE TABLE road_speeds(
+    CREATE TABLE road_context(
         id INTEGER PRIMARY KEY,
         osm_way_id INTEGER NOT NULL UNIQUE,
         highway TEXT NOT NULL,
@@ -109,6 +106,7 @@ def create_db(path):
         conditional TEXT NOT NULL,
         forward_conditional TEXT NOT NULL,
         backward_conditional TEXT NOT NULL,
+        has_speed_tag INTEGER NOT NULL,
         oneway INTEGER NOT NULL,
         level INTEGER NOT NULL,
         geometry_json TEXT NOT NULL,
@@ -117,9 +115,10 @@ def create_db(path):
         min_lat REAL NOT NULL,
         max_lat REAL NOT NULL
     );
-    CREATE INDEX idx_road_speeds_way ON road_speeds(osm_way_id);
-    CREATE INDEX idx_road_speeds_highway ON road_speeds(highway);
-    CREATE VIRTUAL TABLE road_speeds_rtree USING rtree(
+    CREATE INDEX idx_road_context_way ON road_context(osm_way_id);
+    CREATE INDEX idx_road_context_highway ON road_context(highway);
+    CREATE INDEX idx_road_context_speed_tag ON road_context(has_speed_tag);
+    CREATE VIRTUAL TABLE road_context_rtree USING rtree(
         id,min_lon,max_lon,min_lat,max_lat
     );
     """)
@@ -138,8 +137,7 @@ def main():
 
     class Extract(osmium.SimpleHandler):
         def node(self,node):
-            if not node.location.valid(): return
-            if len(node.tags) == 0: return
+            if not node.location.valid() or len(node.tags) == 0: return
             tags = dict(node.tags)
             classified = sign_type(tags)
             if not classified: return
@@ -160,20 +158,20 @@ def main():
             hw = tags.get("highway","")
             if hw not in ROAD_TYPES:
                 return
+
+            points = [(n.location.lon,n.location.lat)
+                      for n in way.nodes if n.location.valid()]
+            if len(points) < 2:
+                return
+
             all_speed = speed_value(tags.get("maxspeed",""))
             fwd = speed_value(tags.get("maxspeed:forward",""))
             bwd = speed_value(tags.get("maxspeed:backward",""))
             cond = (tags.get("maxspeed:conditional","") or "")[:240]
             fcond = (tags.get("maxspeed:forward:conditional","") or "")[:240]
             bcond = (tags.get("maxspeed:backward:conditional","") or "")[:240]
-            if not (all_speed or fwd or bwd or cond or fcond or bcond):
-                return
-            points = []
-            for n in way.nodes:
-                if n.location.valid():
-                    points.append((n.location.lon, n.location.lat))
-            if len(points) < 2:
-                return
+            has_speed_tag = 1 if any((tags.get(k) or "").strip() for k in SPEED_TAGS) else 0
+
             lons = [p[0] for p in points]
             lats = [p[1] for p in points]
             geometry = json.dumps(
@@ -181,48 +179,58 @@ def main():
                 ensure_ascii=False,separators=(",",":")
             )
             cur = db.execute(
-                """INSERT INTO road_speeds(
+                """INSERT INTO road_context(
                     osm_way_id,highway,name,maxspeed,forward_speed,backward_speed,
                     conditional,forward_conditional,backward_conditional,
-                    oneway,level,geometry_json,min_lon,max_lon,min_lat,max_lat)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    has_speed_tag,oneway,level,geometry_json,
+                    min_lon,max_lon,min_lat,max_lat)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (way.id,hw,(tags.get("name","") or "")[:140],
-                 all_speed,fwd,bwd,cond,fcond,bcond,
+                 all_speed,fwd,bwd,cond,fcond,bcond,has_speed_tag,
                  oneway_value(tags),level_value(tags),geometry,
                  min(lons),max(lons),min(lats),max(lats))
             )
             rid = cur.lastrowid
-            db.execute("INSERT INTO road_speeds_rtree VALUES (?,?,?,?,?)",
+            db.execute("INSERT INTO road_context_rtree VALUES (?,?,?,?,?)",
                        (rid,min(lons),max(lons),min(lats),max(lats)))
-            counts["ways_speed_tagged"] += 1
+            counts["road_context_ways"] += 1
             counts["road_geometry_points"] += len(points)
+            if has_speed_tag:
+                counts["ways_speed_tagged"] += 1
+            if all_speed or fwd or bwd:
+                counts["ways_numeric_speed"] += 1
 
     extract = Extract()
-    # locations=True resolves way node coordinates; cache resides only on CI.
     extract.apply_file(str(args.pbf),locations=True,idx="sparse_mem_array")
     db.execute("INSERT INTO regions VALUES (?,?,?)",
                ("vn",int(datetime.datetime.now(datetime.timezone.utc).timestamp()*1000),
                 sum(v for k,v in counts.items() if k.startswith("sign_"))))
     db.commit()
-    rtree_rows = db.execute("SELECT COUNT(*) FROM road_speeds_rtree").fetchone()[0]
+    rtree_rows = db.execute("SELECT COUNT(*) FROM road_context_rtree").fetchone()[0]
     db.execute("PRAGMA optimize")
     db.close()
-    stats = {"source":"OpenStreetMap / Geofabrik Vietnam",
-             "license":"ODbL-1.0","attribution":"© OpenStreetMap contributors",
-             "input_filename":args.pbf.name,
-             "sign_nodes":sum(v for k,v in counts.items() if k.startswith("sign_")),
-             "road_speed_ways":counts["ways_speed_tagged"],
-             "road_geometry_points":counts["road_geometry_points"],
-             "road_rtree_rows":rtree_rows,
-             "classes":dict(sorted(counts.items())),
-             "sqlite_bytes":args.output.stat().st_size}
+
+    stats = {
+        "source":"OpenStreetMap / Geofabrik Vietnam",
+        "license":"ODbL-1.0",
+        "attribution":"© OpenStreetMap contributors",
+        "input_filename":args.pbf.name,
+        "sign_nodes":sum(v for k,v in counts.items() if k.startswith("sign_")),
+        "road_context_ways":counts["road_context_ways"],
+        "road_speed_ways":counts["ways_speed_tagged"],
+        "road_numeric_speed_ways":counts["ways_numeric_speed"],
+        "road_geometry_points":counts["road_geometry_points"],
+        "road_rtree_rows":rtree_rows,
+        "classes":dict(sorted(counts.items())),
+        "sqlite_bytes":args.output.stat().st_size
+    }
     args.stats.parent.mkdir(parents=True,exist_ok=True)
     args.stats.write_text(json.dumps(stats,ensure_ascii=False,indent=2),encoding="utf-8")
     print(json.dumps(stats,ensure_ascii=False))
-    assert stats["sign_nodes"] > 0 and stats["road_speed_ways"] > 0, (
-        "Fail closed: OSM input yielded no real signs or no speed-tagged ways")
-    assert stats["road_rtree_rows"] == stats["road_speed_ways"]
-    assert stats["road_geometry_points"] >= stats["road_speed_ways"] * 2
+    assert stats["sign_nodes"] > 0
+    assert stats["road_context_ways"] > stats["road_speed_ways"] > 0
+    assert stats["road_rtree_rows"] == stats["road_context_ways"]
+    assert stats["road_geometry_points"] >= stats["road_context_ways"] * 2
 
 if __name__ == "__main__":
     main()

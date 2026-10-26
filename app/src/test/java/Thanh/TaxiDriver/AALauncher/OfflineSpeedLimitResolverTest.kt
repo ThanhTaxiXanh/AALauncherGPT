@@ -1,7 +1,7 @@
 package Thanh.TaxiDriver.AALauncher
 
 import Thanh.TaxiDriver.AALauncher.road.SpeedWayGeometry
-import Thanh.TaxiDriver.AALauncher.signs.BundledSpeedRoad
+import Thanh.TaxiDriver.AALauncher.signs.BundledRoadContext
 import Thanh.TaxiDriver.AALauncher.signs.OfflineSpeedLimitResolver
 
 import org.junit.Assert.assertEquals
@@ -17,24 +17,26 @@ class OfflineSpeedLimitResolverTest {
         name: String = "Quoc Lo 1",
         all: Int? = 80,
         forward: Int? = null,
-        backward: Int? = null
-    ) = BundledSpeedRoad(
+        backward: Int? = null,
+        hasSpeedTag: Boolean = true
+    ) = BundledRoadContext(
         geometry = SpeedWayGeometry(id, 0, doubleArrayOf(
             northM / scale, -100.0 / scale,
             northM / scale, 100.0 / scale
         )),
-        highway = "motorway",
+        highway = "primary",
         name = name,
         all = all,
         forward = forward,
         backward = backward,
         allConditional = null,
         forwardConditional = null,
-        backwardConditional = null
+        backwardConditional = null,
+        hasSpeedTag = hasSpeedTag
     )
 
     private fun state(
-        roads: List<BundledSpeedRoad>,
+        roads: List<BundledRoadContext>,
         heading: Double = 90.0,
         moving: Boolean = true,
         accuracy: Double = 3.0,
@@ -72,6 +74,30 @@ class OfflineSpeedLimitResolverTest {
             road(2, northM = 5.0)
         )
         assertNull(state(roads, accuracy = 5.0).limit)
+    }
+
+    @Test fun matchedRoadWithoutSpeedBlocksNearbySpeedLeak() {
+        val actualRoad = road(
+            id = 100,
+            northM = 0.0,
+            name = "Duong Dan Sinh",
+            all = null,
+            hasSpeedTag = false
+        )
+        val nearbyFastRoad = road(
+            id = 101,
+            northM = 12.0,
+            name = "Quoc Lo 1",
+            all = 80,
+            hasSpeedTag = true
+        )
+        val result = state(
+            listOf(actualRoad, nearbyFastRoad),
+            accuracy = 3.0,
+            street = "Duong Dan Sinh"
+        )
+        assertNull(result.limit)
+        assertEquals(100L, result.roadWayId)
     }
 
     @Test fun mismatchedKnownRoadNameFailsClosed() {

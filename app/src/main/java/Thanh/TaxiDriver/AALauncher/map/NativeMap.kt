@@ -10,7 +10,7 @@ import Thanh.TaxiDriver.AALauncher.gps.RoadSnapMatcher
 import Thanh.TaxiDriver.AALauncher.reports.TrafficReport
 import Thanh.TaxiDriver.AALauncher.reports.TrafficReportMapPolicy
 import Thanh.TaxiDriver.AALauncher.reports.TrafficReportStore
-import Thanh.TaxiDriver.AALauncher.signs.BundledSpeedRoad
+import Thanh.TaxiDriver.AALauncher.signs.BundledRoadContext
 import Thanh.TaxiDriver.AALauncher.signs.OfflineSpeedLimitResolver
 import Thanh.TaxiDriver.AALauncher.signs.RoadSigns
 import Thanh.TaxiDriver.AALauncher.signs.SignsState
@@ -115,9 +115,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private val regionDb = Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore(appCtx)
     private val nationalBundle = Thanh.TaxiDriver.AALauncher.signs.BundledVietnamOsm(appCtx)
     private val offlineSpeedResolver = OfflineSpeedLimitResolver()
-    private var offlineSpeedRoads: List<BundledSpeedRoad> = emptyList()
-    private var lastOfflineSpeedFetchMs = -10_000L
-    private var offlineSpeedLoading = false
+    private var offlineRoadContext: List<BundledRoadContext> = emptyList()
+    private var lastOfflineRoadFetchMs = -10_000L
+    private var offlineRoadLoading = false
     private var regionMarkers: List<Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore.Marker> =
         emptyList()
     private var regionKey = Int.MIN_VALUE
@@ -297,10 +297,10 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         filteredGpsLat = Double.NaN
         filteredGpsLon = Double.NaN
         snapped = false
-        offlineSpeedRoads = emptyList()
+        offlineRoadContext = emptyList()
         offlineSpeedResolver.reset()
-        offlineSpeedLoading = false
-        lastOfflineSpeedFetchMs = -10_000L
+        offlineRoadLoading = false
+        lastOfflineRoadFetchMs = -10_000L
         if (perfDebug) performance.reset(SystemClock.elapsedRealtime())
     }
 
@@ -753,7 +753,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             lastStreetMs = nowMs
             refreshStreet(nowMs)
         }
-        updateOfflineSpeedRoads()
+        updateOfflineRoadContext()
         updateSigns()
         updatePersonalReports(nowMs)
         drawRegionalMarkers()
@@ -792,7 +792,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 nowElapsedMs = SystemClock.elapsedRealtime(),
                 wallTimeMs = System.currentTimeMillis(),
                 streetName = streetName,
-                roads = offlineSpeedRoads
+                roads = offlineRoadContext
             )
             signsState = if (liveState.limit != null) liveState
                 else if (offlineState.limit != null) liveState.copy(
@@ -834,28 +834,28 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
      * render loop. The R-Tree query is bounded and the resolver still performs
      * exact geometry matching on the cached candidates.
      */
-    private fun updateOfflineSpeedRoads() {
+    private fun updateOfflineRoadContext() {
         val elapsed = SystemClock.elapsedRealtime()
         if (!hasFix) {
-            offlineSpeedRoads = emptyList()
+            offlineRoadContext = emptyList()
             offlineSpeedResolver.reset()
             return
         }
-        if (offlineSpeedLoading || elapsed - lastOfflineSpeedFetchMs < 1_500L) return
-        lastOfflineSpeedFetchMs = elapsed
-        offlineSpeedLoading = true
+        if (offlineRoadLoading || elapsed - lastOfflineRoadFetchMs < 1_500L) return
+        lastOfflineRoadFetchMs = elapsed
+        offlineRoadLoading = true
         val qLat = tLat
         val qLon = tLon
         reportWorker.execute {
             val roads = try {
-                nationalBundle.nearbySpeedRoads(qLat, qLon, 500.0, 180)
+                nationalBundle.nearbyRoadContext(qLat, qLon, 120.0, 300)
             } catch (e: Exception) {
-                logErr("NativeMap:offlineSpeedRoads", e)
+                logErr("NativeMap:offlineRoadContext", e)
                 emptyList()
             }
             main.post {
-                offlineSpeedRoads = roads
-                offlineSpeedLoading = false
+                offlineRoadContext = roads
+                offlineRoadLoading = false
             }
         }
     }

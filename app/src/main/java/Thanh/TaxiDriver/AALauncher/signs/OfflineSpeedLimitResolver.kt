@@ -10,12 +10,12 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Conservative offline fallback for the bundled OSM speed-way database.
+ * Conservative V3 offline fallback.
  *
- * The bundle contains only ways with explicit speed-related tags, so this
- * resolver applies a stricter GPS/name gate than the live Overpass matcher.
- * It fails closed near ambiguity instead of carrying a neighboring road's
- * speed limit onto the current road.
+ * All nearby supported motor roads participate in matching, including roads
+ * with no speed tag. A limit is returned only when the matched road itself has
+ * an explicit supported speed value/condition. This prevents speed leakage
+ * from parallel roads, frontage roads and nearby ramps.
  */
 internal class OfflineSpeedLimitResolver {
     private val matcher = SpeedWayMatcher()
@@ -34,22 +34,20 @@ internal class OfflineSpeedLimitResolver {
         nowElapsedMs: Long,
         wallTimeMs: Long,
         streetName: String,
-        roads: List<BundledSpeedRoad>
+        roads: List<BundledRoadContext>
     ): SignsState {
         if (!lat.isFinite() || !lon.isFinite() ||
             lat !in -90.0..90.0 || lon !in -180.0..180.0 ||
             !accuracyM.isFinite() || accuracyM < 0.0 || accuracyM > 12.0 ||
             nowElapsedMs - gpsFixMs !in 0L..4_000L || roads.isEmpty()) {
             matcher.reset()
-            return SignsState(null, false, emptyList(),
-                "OSM offline chưa có đoạn tốc độ đủ tin cậy")
+            return unknown("OSM offline chưa có ngữ cảnh đường đủ tin cậy")
         }
 
         val geometries = roads.map { it.geometry }
         val match = matcher.match(
             lat, lon, heading, moving, accuracyM, geometries
-        ) ?: return SignsState(null, false, emptyList(),
-            "OSM offline chưa khớp chắc chắn đoạn đường")
+        ) ?: return unknown("OSM offline chưa khớp chắc chắn đoạn đường")
 
         val road = roads[match.wayIndex]
         val exactDistance = distanceToGeometry(lat, lon, road.geometry)
@@ -61,17 +59,24 @@ internal class OfflineSpeedLimitResolver {
         }
         if (!exactDistance.isFinite() || exactDistance > strictDistance) {
             matcher.reset()
-            return SignsState(null, false, emptyList(),
-                "OSM offline: vị trí chưa đủ chắc chắn")
+            return unknown("OSM offline: vị trí chưa đủ chắc chắn")
         }
 
-        // If both sources know a road name they must agree. OpenFreeMap and the
-        // offline bundle are both OSM-derived, so a mismatch is a useful
-        // fail-closed signal for nearby parallel/service roads.
         if (streetName.isNotBlank() && road.name.isNotBlank() && !nameMatches) {
             matcher.reset()
-            return SignsState(null, false, emptyList(),
-                "OSM offline: tên đường không khớp")
+            return unknown("OSM offline: tên đường không khớp")
+        }
+
+        // The selected road may intentionally have no speed tag. Never borrow
+        // a value from another candidate road in that case.
+        if (!road.hasSpeedTag) {
+            return SignsState(
+                limit = null,
+                estimated = false,
+                upcoming = emptyList(),
+                status = "Đã khớp đường OSM nhưng chưa có giới hạn tốc độ",
+                roadWayId = match.wayId
+            )
         }
 
         val explicit = when {
@@ -95,8 +100,11 @@ internal class OfflineSpeedLimitResolver {
         }
 
         if (explicit == null) {
-            return SignsState(null, false, emptyList(),
-                "OSM offline: giới hạn chưa xác định / có điều kiện")
+            return SignsState(
+                null, false, emptyList(),
+                "OSM offline: giới hạn chưa xác định / điều kiện chưa hỗ trợ",
+                match.wayId
+            )
         }
         return SignsState(
             limit = explicit,
@@ -106,6 +114,9 @@ internal class OfflineSpeedLimitResolver {
             roadWayId = match.wayId
         )
     }
+
+    private fun unknown(status: String) =
+        SignsState(null, false, emptyList(), status)
 
     private fun distanceToGeometry(
         lat: Double, lon: Double, geometry: SpeedWayGeometry
