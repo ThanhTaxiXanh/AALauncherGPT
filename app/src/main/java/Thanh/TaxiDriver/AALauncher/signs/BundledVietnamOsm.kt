@@ -4,7 +4,6 @@ import Thanh.TaxiDriver.AALauncher.road.SpeedWayGeometry
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
-import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -134,7 +133,7 @@ internal class BundledVietnamOsm(private val ctx: Context) {
             SELECT r.osm_way_id,r.highway,r.name,r.maxspeed,
                    r.forward_speed,r.backward_speed,r.conditional,
                    r.forward_conditional,r.backward_conditional,
-                   r.has_speed_tag,r.oneway,r.level,r.geometry_json
+                   r.has_speed_tag,r.oneway,r.level,r.geometry_blob
             FROM road_context_rtree AS idx
             JOIN road_context AS r ON r.id=idx.id
             WHERE idx.min_lon <= ? AND idx.max_lon >= ?
@@ -147,11 +146,11 @@ internal class BundledVietnamOsm(private val ctx: Context) {
             (lat+dy).toString(), (lat-dy).toString()
         )).use { c ->
             while (c.moveToNext()) {
-                val geometry = parseLineGeometry(
+                val geometry = RoadGeometryCodec.decode(
+                    blob = c.getBlob(12),
                     wayId = c.getLong(0),
                     level = c.getInt(11),
-                    oneway = c.getInt(10),
-                    raw = c.getString(12)
+                    oneway = c.getInt(10)
                 ) ?: continue
                 out.add(BundledRoadContext(
                     geometry = geometry,
@@ -172,27 +171,6 @@ internal class BundledVietnamOsm(private val ctx: Context) {
 
     private fun speedOrNull(value: Int): Int? = value.takeIf { it in 5..160 }
     private fun textOrNull(value: String?): String? = value?.trim()?.takeIf { it.isNotEmpty() }
-
-    private fun parseLineGeometry(
-        wayId: Long, level: Int, oneway: Int, raw: String
-    ): SpeedWayGeometry? {
-        val root = JSONObject(raw)
-        if (root.optString("type") != "LineString") return null
-        val coords = root.optJSONArray("coordinates") ?: return null
-        if (coords.length() !in 2..5000) return null
-        val points = DoubleArray(coords.length() * 2)
-        for (i in 0 until coords.length()) {
-            val pair = coords.optJSONArray(i) ?: return null
-            if (pair.length() < 2) return null
-            val lon = pair.optDouble(0, Double.NaN)
-            val lat = pair.optDouble(1, Double.NaN)
-            if (!lat.isFinite() || !lon.isFinite() ||
-                lat !in -90.0..90.0 || lon !in -180.0..180.0) return null
-            points[i * 2] = lat
-            points[i * 2 + 1] = lon
-        }
-        return SpeedWayGeometry(wayId, level, points, LongArray(0), oneway)
-    }
 
     @Synchronized fun close() {
         database?.close()

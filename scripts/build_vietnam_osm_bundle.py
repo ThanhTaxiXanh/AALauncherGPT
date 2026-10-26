@@ -106,13 +106,36 @@ def way_intersects_corridor(points, corridor):
             return True
     return False
 
+def _put_varint(out, value):
+    while value >= 0x80:
+        out.append((value & 0x7f) | 0x80)
+        value >>= 7
+    out.append(value)
+
+def _zigzag(value):
+    return (value << 1) ^ (value >> 63)
+
+def encode_geometry(points):
+    """Delta + ZigZag + unsigned varint, lon/lat quantized to 1e-6 degree."""
+    out=bytearray()
+    prev_lat=0
+    prev_lon=0
+    for lon,lat in points:
+        lat_e6=round(lat*1_000_000)
+        lon_e6=round(lon*1_000_000)
+        _put_varint(out,_zigzag(lat_e6-prev_lat))
+        _put_varint(out,_zigzag(lon_e6-prev_lon))
+        prev_lat=lat_e6
+        prev_lon=lon_e6
+    return bytes(out)
+
 def create_db(path):
     if path.exists(): path.unlink()
     db=sqlite3.connect(path)
     db.executescript("""
     PRAGMA journal_mode=DELETE;
     PRAGMA synchronous=OFF;
-    PRAGMA user_version=31;
+    PRAGMA user_version=32;
     CREATE TABLE regions(region TEXT PRIMARY KEY,updated_ms INTEGER NOT NULL,feature_count INTEGER NOT NULL);
     CREATE TABLE markers(region TEXT NOT NULL,id TEXT NOT NULL,lat REAL NOT NULL,lon REAL NOT NULL,
         type TEXT NOT NULL,label TEXT NOT NULL,speed_value INTEGER NOT NULL,
@@ -132,7 +155,7 @@ def create_db(path):
         has_speed_tag INTEGER NOT NULL,
         oneway INTEGER NOT NULL,
         level INTEGER NOT NULL,
-        geometry_json TEXT NOT NULL,
+        geometry_blob BLOB NOT NULL,
         min_lon REAL NOT NULL,max_lon REAL NOT NULL,
         min_lat REAL NOT NULL,max_lat REAL NOT NULL
     );
@@ -214,13 +237,12 @@ def main():
             fcond=(tags.get("maxspeed:forward:conditional","") or "")[:240]
             bcond=(tags.get("maxspeed:backward:conditional","") or "")[:240]
             lons=[p[0] for p in points]; lats=[p[1] for p in points]
-            geometry=json.dumps({"type":"LineString","coordinates":points},
-                                ensure_ascii=False,separators=(",",":"))
+            geometry=encode_geometry(points)
             cur=db.execute(
                 """INSERT INTO road_context(
                     osm_way_id,highway,name,maxspeed,forward_speed,backward_speed,
                     conditional,forward_conditional,backward_conditional,
-                    has_speed_tag,oneway,level,geometry_json,
+                    has_speed_tag,oneway,level,geometry_blob,
                     min_lon,max_lon,min_lat,max_lat)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (way.id,hw,(tags.get("name","") or "")[:140],
@@ -232,6 +254,7 @@ def main():
                        (rid,min(lons),max(lons),min(lats),max(lats)))
             counts["road_context_ways"]+=1
             counts["road_geometry_points"]+=len(points)
+            counts["road_geometry_encoded_bytes"]+=len(geometry)
             if speed_tagged: counts["ways_speed_tagged"]+=1
             else: counts["context_only_ways"]+=1
             if all_speed or fwd or bwd: counts["ways_numeric_speed"]+=1
@@ -257,6 +280,8 @@ def main():
         "road_speed_ways":counts["ways_speed_tagged"],
         "road_numeric_speed_ways":counts["ways_numeric_speed"],
         "road_geometry_points":counts["road_geometry_points"],
+        "road_geometry_encoded_bytes":counts["road_geometry_encoded_bytes"],
+        "geometry_encoding":"delta-zigzag-varint-e6",
         "road_rtree_rows":rtree_rows,
         "classes":dict(sorted(counts.items())),
         "sqlite_bytes":args.output.stat().st_size

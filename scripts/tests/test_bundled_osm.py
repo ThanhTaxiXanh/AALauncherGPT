@@ -14,7 +14,15 @@ class BundledOsmStaticTests(unittest.TestCase):
         self.assertIn("corridor=set()",text)
         self.assertIn("way_intersects_corridor",text)
         self.assertIn("CREATE TABLE road_context(",text)
+        self.assertIn("geometry_blob BLOB NOT NULL",text)
         self.assertIn("CREATE VIRTUAL TABLE road_context_rtree USING rtree",text)
+
+    def test_geometry_uses_compact_varint_blob(self):
+        text=SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("def encode_geometry(points):",text)
+        self.assertIn("_put_varint",text)
+        self.assertIn("_zigzag",text)
+        self.assertNotIn("geometry_json TEXT NOT NULL",text)
 
     def test_context_is_not_entire_national_network(self):
         text=SCRIPT.read_text(encoding="utf-8")
@@ -42,6 +50,8 @@ class BundledOsmStaticTests(unittest.TestCase):
         self.assertIn("FROM road_context_rtree AS idx",text)
         self.assertIn("JOIN road_context AS r",text)
         self.assertIn("BundledRoadContext",text)
+        self.assertIn("r.geometry_blob",text)
+        self.assertIn("RoadGeometryCodec.decode",text)
 
 if __name__=="__main__":
     unittest.main()

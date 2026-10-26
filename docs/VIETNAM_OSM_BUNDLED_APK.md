@@ -81,3 +81,14 @@ first index the cells around explicit speed-tagged motor roads; then retain
 only speed ways plus motor roads intersecting those cells. This keeps the
 safety property needed for parallel-road matching without embedding unrelated
 roads hundreds of kilometres away.
+
+
+## V3.2 compact geometry
+
+V3.2 replaces JSON LineString strings inside SQLite with a binary geometry BLOB.
+Coordinates are quantized to 1e-6 degree, delta encoded, ZigZag transformed and
+stored as unsigned varints. This keeps sub-metre geometry precision while
+removing JSON punctuation/decimal-text overhead. Android decodes only the small
+R-Tree neighborhood in `RoadGeometryCodec`; no national geometry is expanded
+into memory. A cross-language reference-vector unit test locks the Python
+encoder and Kotlin decoder to the same byte format.
