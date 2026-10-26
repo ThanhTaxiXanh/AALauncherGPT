@@ -20,7 +20,10 @@ internal object TrafficReportMapPolicy {
         return reports.asSequence().mapNotNull { report ->
             val point = report.location ?: return@mapNotNull null
             val age = nowMs - report.createdAtMs
-            if (age < 0 || age > MAX_AGE_MS) return@mapNotNull null
+            // User-reported physical signs persist; traffic incidents expire.
+            val permanentSign = report.kind.name.startsWith("SIGN_")
+            if (age < 0 || (!permanentSign && age > MAX_AGE_MS))
+                return@mapNotNull null
             val north = (point.lat - lat) * 111_320.0
             val east = (point.lon - lon) * 111_320.0 *
                 cos(Math.toRadians((lat + point.lat) / 2.0))

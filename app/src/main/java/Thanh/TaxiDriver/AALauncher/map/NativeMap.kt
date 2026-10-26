@@ -874,6 +874,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         markers.forEach {
             key = 31 * key + it.osmId.hashCode()
             key = 31 * key + it.type.hashCode()
+            key = 31 * key + it.lat.hashCode()
+            key = 31 * key + it.lon.hashCode()
+            key = 31 * key + it.value
         }
         if (key == regionKey) return
         source.setGeoJson(FeatureCollection.fromFeatures(markers.map { point ->
