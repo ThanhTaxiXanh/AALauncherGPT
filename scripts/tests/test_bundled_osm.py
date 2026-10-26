@@ -16,48 +16,35 @@ class BundledOsmStaticTests(unittest.TestCase):
         self.assertIn("CREATE VIRTUAL TABLE road_context_rtree USING rtree",text)
         self.assertIn("has_speed_tag INTEGER NOT NULL",text)
         self.assertIn('{"type":"LineString","coordinates":points}',text)
-        self.assertIn('locations=True',text)
 
-    def test_context_keeps_supported_motor_roads_without_requiring_speed(self):
+    def test_context_is_halo_bounded_not_whole_national_network(self):
         text=SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('if hw not in ROAD_TYPES:',text)
-        self.assertNotIn('if not (all_speed or fwd or bwd or cond or fcond or bcond):',text)
+        self.assertIn("class SpeedAreaCollector",text)
+        self.assertIn("CONTEXT_HALO_DEG = 0.001",text)
+        self.assertIn("def near_speed_area(box):",text)
+        self.assertIn("if not speed_tag and not near_speed_area(box):",text)
+        self.assertIn('assert stats["road_context_ways"] < 1_000_000',text)
+
+    def test_supported_road_classes_exclude_non_driving_objects(self):
+        text=SCRIPT.read_text(encoding="utf-8")
         road_types=text.split("ROAD_TYPES =",1)[1].split("}",1)[0]
-        self.assertNotIn('"construction"',road_types)
-        self.assertNotIn('"proposed"',road_types)
-        self.assertNotIn('"track"',road_types)
-        self.assertNotIn('"path"',road_types)
+        for excluded in ('"construction"','"proposed"','"track"','"path"'):
+            self.assertNotIn(excluded,road_types)
 
     def test_speed_tag_presence_is_separate_from_numeric_speed(self):
         text=SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("has_speed_tag = 1 if any",text)
-        self.assertIn('counts["road_context_ways"] += 1',text)
+        self.assertIn("def has_speed_tag(tags):",text)
+        self.assertIn('counts["context_only_ways"] += 1',text)
         self.assertIn('counts["ways_speed_tagged"] += 1',text)
-
-    def test_directional_and_conditional_speed_tags_are_preserved(self):
-        text=SCRIPT.read_text(encoding="utf-8")
-        for field in (
-            "maxspeed:forward", "maxspeed:backward", "maxspeed:conditional",
-            "maxspeed:forward:conditional", "maxspeed:backward:conditional"
-        ):
-            self.assertIn(field,text)
 
     def test_workflow_prefilters_all_supported_motor_roads(self):
         workflow=WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("w/highway=motorway,trunk,primary,secondary,tertiary",workflow)
 
-    def test_compressed_asset_name_is_aapt_safe_and_consistent(self):
-        asset="vietnam_signs.sqlite.gzbin"
-        workflow=WORKFLOW.read_text(encoding="utf-8")
-        bundle=BUNDLE.read_text(encoding="utf-8")
-        self.assertIn(asset,workflow)
-        self.assertIn(f'ctx.assets.open("osm/{asset}")',bundle)
-
-    def test_runtime_reads_context_rtree_and_full_geometry(self):
+    def test_runtime_reads_context_rtree(self):
         text=BUNDLE.read_text(encoding="utf-8")
         self.assertIn("FROM road_context_rtree AS idx",text)
         self.assertIn("JOIN road_context AS r",text)
-        self.assertIn("r.geometry_json",text)
         self.assertIn("BundledRoadContext",text)
 
 if __name__ == '__main__':

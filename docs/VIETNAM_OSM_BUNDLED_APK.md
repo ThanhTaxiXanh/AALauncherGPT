@@ -16,14 +16,14 @@ License: ODbL, © OpenStreetMap contributors.
 - Physical sign-like OSM *nodes*: traffic_sign, speed cameras, red-light
   enforcement, give-way, STOP, selected Vietnam traffic sign codes,
   speed nodes, warning and other explicitly tagged items.
-- V3 stores **all supported motor-road ways**, including roads with no
-  `maxspeed`. Every row has full OSM LineString geometry, way ID, highway
-  class, road name, layer/bridge/tunnel level and oneway. Speed fields remain
-  empty/zero when OSM does not provide them; no limit is inferred from road
-  class. Railway, construction, proposed, path and track objects are excluded.
-- `road_context_rtree` indexes all supported road bounding boxes. Roads with
-  no speed are context competitors for GPS matching, preventing a nearby
-  speed-tagged road from lending its limit to the current road.
+- V3 stores every supported motor-road way that has a speed tag, plus a
+  **~100 m road-context halo** of nearby supported roads without speed tags.
+  This retains frontage/service/parallel competitors where speed leakage is
+  possible without embedding the entire national road network. Every stored
+  row has full OSM LineString geometry, way ID, highway class, road name,
+  level and oneway. No limit is inferred from highway class.
+- `road_context_rtree` indexes the compact halo bundle. Context-only roads
+  can win GPS matching but can never produce a speed limit.
 - Region `vn` and coordinate indices; source counts in
   `assets/osm/vietnam_stats.json` to verify the build extracted real
   data rather than using empty or sample features.
@@ -38,16 +38,18 @@ regional OSM markers in `NativeMap` with an upper bound per GPS area.
 
 For speed limits, V3 loads a small R-Tree road-context neighborhood in a
 background worker. `OfflineSpeedLimitResolver` matches GPS + heading against
-**all nearby supported roads**, not only roads that have a speed tag. A speed
-is shown only if the selected way itself contains a supported explicit OSM
+the speed-tagged road and its nearby context competitors. A speed is shown
+only if the selected way itself contains a supported explicit OSM
 speed/conditional rule. Fresh live Overpass data still wins. GPS must be
 recent and <=12 m accuracy, known road names must agree, unnamed roads require
 a very close geometry match, and ambiguous parallel/crossing roads fail closed.
 
 This is an **APK-bundled offline sign/speed database**, not a complete
 offline map basemap (MapLibre's vector style may still require network)
-or a complete offline routable road graph. V3 includes road context even when
-speed is unknown specifically to reduce false matches. It still does not infer
+or a complete offline routable road graph. A first whole-network V3 prototype
+was rejected because it produced ~2.78 million road ways and a ~1.49 GB
+SQLite; the compact halo design keeps only context relevant to speed matching.
+It still does not infer
 a legal limit from `highway=*`, and unsupported/symbolic speed conditions
 remain unknown. OSM coverage cannot be assumed complete, and physical
 signs/current law always take precedence.

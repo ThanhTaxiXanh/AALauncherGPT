@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Build nationwide OSM traffic-sign and road-context SQLite from Geofabrik PBF.
+"""Build nationwide OSM traffic-sign and compact road-context SQLite.
 
-V3 stores every supported motor-road way, including roads without maxspeed.
-This prevents GPS matching from borrowing a speed limit from a nearby road.
-Requires pyosmium. Never fabricate speed limits, cameras, or sign positions.
+V3 keeps every supported road with a speed tag plus nearby competing motor
+roads. Context-only roads exist solely to prevent a speed-tagged parallel road
+from lending its limit to the vehicle's actual road. No speed is fabricated.
 """
 import argparse
 import collections
 import datetime
 import json
+import math
 import pathlib
 import re
 import sqlite3
@@ -27,6 +28,12 @@ SPEED_TAGS = ("maxspeed","maxspeed:forward","maxspeed:backward",
               "maxspeed:conditional","maxspeed:forward:conditional",
               "maxspeed:backward:conditional")
 
+# Vietnam is roughly 8..24 N. 0.001 degrees is about 102..111 m there.
+# SpeedWayMatcher's GPS gate is <=25 m; this larger halo preserves nearby
+# frontage/service/parallel roads without embedding the entire road network.
+CONTEXT_HALO_DEG = 0.001
+GRID_DEG = 0.02
+
 def speed_value(text):
     raw = (text or "").strip().lower()
     if raw == "walk":
@@ -38,6 +45,9 @@ def speed_value(text):
     if (m.group(2) or "").lower() == "mph":
         value = round(value * 1.609344)
     return value if 5 <= value <= 160 else 0
+
+def has_speed_tag(tags):
+    return any((tags.get(k) or "").strip() for k in SPEED_TAGS)
 
 def sign_type(tags):
     hw = tags.get("highway", "")
@@ -81,6 +91,25 @@ def level_value(tags):
         if tags.get("bridge") and tags.get("bridge") != "no": return 1
         if tags.get("tunnel") and tags.get("tunnel") != "no": return -1
         return 0
+
+def bbox(points):
+    lons = [p[0] for p in points]
+    lats = [p[1] for p in points]
+    return min(lons), max(lons), min(lats), max(lats)
+
+def grid_cells(box):
+    min_lon,max_lon,min_lat,max_lat = box
+    x0 = math.floor(min_lon / GRID_DEG)
+    x1 = math.floor(max_lon / GRID_DEG)
+    y0 = math.floor(min_lat / GRID_DEG)
+    y1 = math.floor(max_lat / GRID_DEG)
+    for x in range(x0,x1+1):
+        for y in range(y0,y1+1):
+            yield x,y
+
+def overlaps(a,b):
+    return not (a[1] < b[0] or a[0] > b[1] or
+                a[3] < b[2] or a[2] > b[3])
 
 def create_db(path):
     if path.exists(): path.unlink()
@@ -131,10 +160,51 @@ def main():
     p.add_argument("--stats", required=True, type=pathlib.Path)
     args = p.parse_args()
     args.output.parent.mkdir(parents=True,exist_ok=True)
+
+    # Pass 1: index only areas around roads that actually carry a speed tag.
+    speed_boxes = []
+    speed_grid = {}
+
+    class SpeedAreaCollector(osmium.SimpleHandler):
+        def way(self,way):
+            tags = dict(way.tags)
+            if tags.get("highway","") not in ROAD_TYPES or not has_speed_tag(tags):
+                return
+            points = [(n.location.lon,n.location.lat)
+                      for n in way.nodes if n.location.valid()]
+            if len(points) < 2:
+                return
+            min_lon,max_lon,min_lat,max_lat = bbox(points)
+            expanded = (
+                min_lon-CONTEXT_HALO_DEG, max_lon+CONTEXT_HALO_DEG,
+                min_lat-CONTEXT_HALO_DEG, max_lat+CONTEXT_HALO_DEG
+            )
+            index = len(speed_boxes)
+            speed_boxes.append(expanded)
+            for cell in grid_cells(expanded):
+                speed_grid.setdefault(cell, []).append(index)
+
+    collector = SpeedAreaCollector()
+    collector.apply_file(str(args.pbf),locations=True,idx="sparse_mem_array")
+    if not speed_boxes:
+        raise RuntimeError("No speed-tagged motor roads found in OSM input")
+
+    def near_speed_area(box):
+        seen = set()
+        for cell in grid_cells(box):
+            for index in speed_grid.get(cell, ()):
+                if index in seen:
+                    continue
+                seen.add(index)
+                if overlaps(box, speed_boxes[index]):
+                    return True
+        return False
+
     db = create_db(args.output)
     counts = collections.Counter()
     seen_nodes = set()
 
+    # Pass 2: store all speed-tagged roads plus only nearby context competitors.
     class Extract(osmium.SimpleHandler):
         def node(self,node):
             if not node.location.valid() or len(node.tags) == 0: return
@@ -158,10 +228,13 @@ def main():
             hw = tags.get("highway","")
             if hw not in ROAD_TYPES:
                 return
-
             points = [(n.location.lon,n.location.lat)
                       for n in way.nodes if n.location.valid()]
             if len(points) < 2:
+                return
+            box = bbox(points)
+            speed_tag = has_speed_tag(tags)
+            if not speed_tag and not near_speed_area(box):
                 return
 
             all_speed = speed_value(tags.get("maxspeed",""))
@@ -170,10 +243,7 @@ def main():
             cond = (tags.get("maxspeed:conditional","") or "")[:240]
             fcond = (tags.get("maxspeed:forward:conditional","") or "")[:240]
             bcond = (tags.get("maxspeed:backward:conditional","") or "")[:240]
-            has_speed_tag = 1 if any((tags.get(k) or "").strip() for k in SPEED_TAGS) else 0
-
-            lons = [p[0] for p in points]
-            lats = [p[1] for p in points]
+            min_lon,max_lon,min_lat,max_lat = box
             geometry = json.dumps(
                 {"type":"LineString","coordinates":points},
                 ensure_ascii=False,separators=(",",":")
@@ -186,17 +256,19 @@ def main():
                     min_lon,max_lon,min_lat,max_lat)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (way.id,hw,(tags.get("name","") or "")[:140],
-                 all_speed,fwd,bwd,cond,fcond,bcond,has_speed_tag,
+                 all_speed,fwd,bwd,cond,fcond,bcond,1 if speed_tag else 0,
                  oneway_value(tags),level_value(tags),geometry,
-                 min(lons),max(lons),min(lats),max(lats))
+                 min_lon,max_lon,min_lat,max_lat)
             )
             rid = cur.lastrowid
             db.execute("INSERT INTO road_context_rtree VALUES (?,?,?,?,?)",
-                       (rid,min(lons),max(lons),min(lats),max(lats)))
+                       (rid,min_lon,max_lon,min_lat,max_lat))
             counts["road_context_ways"] += 1
             counts["road_geometry_points"] += len(points)
-            if has_speed_tag:
+            if speed_tag:
                 counts["ways_speed_tagged"] += 1
+            else:
+                counts["context_only_ways"] += 1
             if all_speed or fwd or bwd:
                 counts["ways_numeric_speed"] += 1
 
@@ -215,8 +287,11 @@ def main():
         "license":"ODbL-1.0",
         "attribution":"© OpenStreetMap contributors",
         "input_filename":args.pbf.name,
+        "context_halo_degrees":CONTEXT_HALO_DEG,
+        "speed_area_count":len(speed_boxes),
         "sign_nodes":sum(v for k,v in counts.items() if k.startswith("sign_")),
         "road_context_ways":counts["road_context_ways"],
+        "road_context_only_ways":counts["context_only_ways"],
         "road_speed_ways":counts["ways_speed_tagged"],
         "road_numeric_speed_ways":counts["ways_numeric_speed"],
         "road_geometry_points":counts["road_geometry_points"],
@@ -227,10 +302,14 @@ def main():
     args.stats.parent.mkdir(parents=True,exist_ok=True)
     args.stats.write_text(json.dumps(stats,ensure_ascii=False,indent=2),encoding="utf-8")
     print(json.dumps(stats,ensure_ascii=False))
+
     assert stats["sign_nodes"] > 0
     assert stats["road_context_ways"] > stats["road_speed_ways"] > 0
+    assert stats["road_context_only_ways"] > 0
     assert stats["road_rtree_rows"] == stats["road_context_ways"]
     assert stats["road_geometry_points"] >= stats["road_context_ways"] * 2
+    # A guard against accidentally reverting to the 1.5 GB whole-network V3.
+    assert stats["road_context_ways"] < 1_000_000
 
 if __name__ == "__main__":
     main()

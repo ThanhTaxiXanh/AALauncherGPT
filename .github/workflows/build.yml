@@ -152,9 +152,11 @@ jobs:
           root=pathlib.Path('app/src/debug/assets/osm')
           x=json.loads((root/'vietnam_stats.json').read_text())
           assert x['sign_nodes']>0 and x['road_context_ways']>x['road_speed_ways']>0
+          assert x['road_context_only_ways']>0
+          assert x['road_context_ways']<1_000_000
           assert x['road_rtree_rows']==x['road_context_ways']
           assert x['road_geometry_points'] >= 2*x['road_context_ways']
-          assert (root/'vietnam_signs.sqlite.gzbin').stat().st_size < 350_000_000
+          assert (root/'vietnam_signs.sqlite.gzbin').stat().st_size < 250_000_000
           print('OSM source counts:',x)
           PY
       - name: Build clean debug APK containing nationwide OSM dataset
