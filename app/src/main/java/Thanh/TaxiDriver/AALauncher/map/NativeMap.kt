@@ -109,6 +109,11 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private var signsKey = Int.MIN_VALUE
     private val signsSrc = "ct-signs"
     private val reportsSrc = "ct-personal-reports"
+    private val osmRegionsSrc = "ct-regional-osm-signs"
+    private val regionDb = Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore(appCtx)
+    private var regionMarkers: List<Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore.Marker> =
+        emptyList()
+    private var regionKey = Int.MIN_VALUE
     private val reportStore = TrafficReportStore(File(appCtx.filesDir, "traffic_reports_v1.json"))
     private val settingsStore = DashboardSettingsRepository(appCtx)
     private val reportWorker = Executors.newSingleThreadExecutor()
@@ -296,6 +301,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         stop()
         onFrame = null
         reportWorker.shutdownNow()
+        regionDb.close()
         signs.close()
     }
 
@@ -737,6 +743,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
         updateSigns()
         updatePersonalReports(nowMs)
+        drawRegionalMarkers()
     }
 
     // ---------- biển báo & giới hạn tốc độ ----------
@@ -809,11 +816,19 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 logErr("NativeMap:personalReports", e)
                 emptyList()
             } else emptyList()
+            val regional = if (hasFix) try {
+                regionDb.nearby(tLat, tLon)
+            } catch (e: Exception) {
+                logErr("NativeMap:regionalOsm", e)
+                emptyList()
+            } else emptyList()
             main.post {
                 reportLayerEnabled = enabled
                 reportSnapshot = records
+                regionMarkers = regional
                 reportsLoading = false
                 drawPersonalReports(nowMs)
+                drawRegionalMarkers()
             }
         }
         // GPS position can change between file polls, so update the clip.
@@ -846,6 +861,54 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         }
         source.setGeoJson(FeatureCollection.fromFeatures(features))
         reportKey = key
+    }
+
+    /**
+     * Offline OSM markers are a separate source from personal unverified
+     * reports and from live Overpass road-matched warnings.
+     */
+    private fun drawRegionalMarkers() {
+        val source = map?.style?.getSourceAs<GeoJsonSource>(osmRegionsSrc) ?: return
+        val markers = if (hasFix) regionMarkers else emptyList()
+        var key = markers.size
+        markers.forEach {
+            key = 31 * key + it.osmId.hashCode()
+            key = 31 * key + it.type.hashCode()
+        }
+        if (key == regionKey) return
+        source.setGeoJson(FeatureCollection.fromFeatures(markers.map { point ->
+            Feature.fromGeometry(Point.fromLngLat(point.lon, point.lat)).apply {
+                addStringProperty("label", point.label)
+                addStringProperty("type", point.type)
+                addStringProperty("color", signColor(point.type))
+                addStringProperty("verification", "osm_unverified_current")
+            }
+        }))
+        regionKey = key
+    }
+
+    private fun installRegionalMarkers(style: Style) {
+        try {
+            regionKey = Int.MIN_VALUE
+            style.addSource(GeoJsonSource(osmRegionsSrc))
+            style.addLayer(CircleLayer("ct-regional-osm-circle", osmRegionsSrc)
+                .withProperties(
+                    PropertyFactory.circleRadius(10f),
+                    PropertyFactory.circleColor("#ffffff"),
+                    PropertyFactory.circleStrokeColor("#1565c0"),
+                    PropertyFactory.circleStrokeWidth(3f)
+                ))
+            style.addLayer(SymbolLayer("ct-regional-osm-label", osmRegionsSrc)
+                .withProperties(
+                    PropertyFactory.textField(Expression.get("label")),
+                    PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+                    PropertyFactory.textSize(10f),
+                    PropertyFactory.textColor("#111111"),
+                    PropertyFactory.textAllowOverlap(true)
+                ))
+        } catch (e: Exception) {
+            logErr("NativeMap:installRegionalOsm", e)
+        }
     }
 
     private fun installPersonalReports(style: Style) {
@@ -1031,6 +1094,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
             if (night) themeNight(style)
             tuneLabels(style)
             installSigns(style)
+            installRegionalMarkers(style)
             installPersonalReports(style)
             status = "Bản đồ đã tải"
             if (perfDebug) {

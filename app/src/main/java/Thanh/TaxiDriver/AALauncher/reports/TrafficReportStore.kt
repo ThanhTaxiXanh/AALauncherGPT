@@ -16,7 +16,18 @@ enum class TrafficReportKind(val title: String) {
     ROADWORK("Thi công"),
     CLOSURE("Đường bị chặn"),
     HAZARD("Chướng ngại vật"),
-    OTHER("Khác")
+    OTHER("Khác"),
+    SIGN_SPEED("Biển giới hạn tốc độ"),
+    SIGN_END_SPEED("Hết giới hạn tốc độ"),
+    SIGN_NO_ENTRY("Biển cấm đi vào"),
+    SIGN_NO_OVERTAKING("Biển cấm vượt"),
+    SIGN_STOP("Biển STOP"),
+    SIGN_YIELD("Biển nhường đường"),
+    SIGN_PARKING("Biển cấm đỗ"),
+    SIGN_SCHOOL("Biển gần trường học"),
+    SIGN_WARNING("Biển cảnh báo khác"),
+    SIGN_CAMERA_SPEED("Camera tốc độ"),
+    SIGN_CAMERA_RED("Camera đèn đỏ")
 }
 enum class TrafficReportSeverity(val title: String) {
     LOW("Nhẹ"), MEDIUM("Trung bình"), HIGH("Nghiêm trọng")
@@ -38,12 +49,17 @@ data class TrafficReport(
     val severity: TrafficReportSeverity,
     val note: String,
     val createdAtMs: Long,
-    val location: TrafficReportLocation? = null
+    val location: TrafficReportLocation? = null,
+    val speedKmh: Int? = null
 ) {
     init {
         require(id.isNotBlank() && id.length <= 80)
         require(createdAtMs > 0L)
         require(note.length <= 240)
+        require(speedKmh == null || (kind == TrafficReportKind.SIGN_SPEED &&
+            speedKmh in 5..160 && speedKmh % 5 == 0)) {
+            "Chỉ biển giới hạn tốc độ mới có giá trị 5–160 km/h."
+        }
     }
 }
 
@@ -69,14 +85,15 @@ class TrafficReportStore(
         kind: TrafficReportKind,
         severity: TrafficReportSeverity,
         note: String,
-        location: TrafficReportLocation? = null
+        location: TrafficReportLocation? = null,
+        speedKmh: Int? = null
     ): TrafficReport {
         require(note.length <= 240) { "Ghi chú tối đa 240 ký tự." }
         val previous = read()
         check(previous.size < MAX_REPORTS) {
             "Đã đạt giới hạn $MAX_REPORTS báo cáo; hãy xóa bớt báo cáo cũ."
         }
-        val candidate = TrafficReport(idFactory(), kind, severity, note.trim(), clock(), location)
+        val candidate = TrafficReport(idFactory(), kind, severity, note.trim(), clock(), location, speedKmh)
         check(previous.none { it.id == candidate.id }) { "Trùng mã báo cáo." }
         write(previous + candidate)
         return candidate
@@ -87,7 +104,7 @@ class TrafficReportStore(
     @Synchronized fun update(
         id: String, kind: TrafficReportKind,
         severity: TrafficReportSeverity, note: String,
-        location: TrafficReportLocation?
+        location: TrafficReportLocation?, speedKmh: Int? = null
     ): TrafficReport? {
         require(note.length <= 240) { "Ghi chú tối đa 240 ký tự." }
         val reports = read()
@@ -95,7 +112,8 @@ class TrafficReportStore(
         if (index < 0) return null
         val changed = reports.toMutableList()
         val edited = reports[index].copy(
-            kind = kind, severity = severity, note = note.trim(), location = location
+            kind = kind, severity = severity, note = note.trim(), location = location,
+            speedKmh = speedKmh
         )
         changed[index] = edited
         if (edited != reports[index]) write(changed)
@@ -124,6 +142,7 @@ class TrafficReportStore(
                 .put("note", r.note)
                 .put("createdAtMs", r.createdAtMs)
                 .put("verified", false)
+                .put("speedKmh", r.speedKmh ?: JSONObject.NULL)
             if (includeGps && r.location != null) {
                 obj.put("location", JSONObject()
                     .put("lat", r.location.lat)
@@ -175,7 +194,9 @@ class TrafficReportStore(
                     TrafficReportSeverity.valueOf(r.getString("severity")),
                     r.getString("note"),
                     r.getLong("createdAtMs"),
-                    location
+                    location,
+                    if (r.isNull("speedKmh") || !r.has("speedKmh")) null
+                    else r.getInt("speedKmh")
                 )
             )
         }
@@ -200,6 +221,7 @@ class TrafficReportStore(
                 .put("note", r.note)
                 .put("createdAtMs", r.createdAtMs)
                 .put("location", loc ?: JSONObject.NULL)
+                .put("speedKmh", r.speedKmh ?: JSONObject.NULL)
             )
         }
         val payload = JSONObject()

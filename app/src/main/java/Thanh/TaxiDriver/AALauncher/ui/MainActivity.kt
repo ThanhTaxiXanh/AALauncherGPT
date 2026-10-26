@@ -64,6 +64,11 @@ class MainActivity : Activity() {
     private val reqNotifications = 4
     private val reqAudio = 5
     private val reqExportQr = 6
+    private val reqRegionImport = 7
+    private val regionStore by lazy {
+        Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore(applicationContext)
+    }
+    private lateinit var regionsInfo: TextView
     private var exportQrId: String? = null
     private val qrLibrary by lazy { QrLibraryStore(filesDir) }
     private lateinit var qrBox: LinearLayout
@@ -94,7 +99,7 @@ class MainActivity : Activity() {
             setPadding(pad, pad * 2, pad, pad)
         }
         val title = TextView(this).apply {
-            text = "CarTaxiLauncher"
+            text = "AA Taxi Driver"
             textSize = 22f
         }
         preview = ImageView(this).apply {
@@ -183,6 +188,7 @@ class MainActivity : Activity() {
         root.addView(reportsTitle)
         root.addView(reportBox)
         root.addView(addReport)
+        addRegionImportControls(root)
         val exportReports = Button(this).apply {
             text = "Xuất báo cáo JSON"
             setOnClickListener { showExportDialog() }
@@ -797,6 +803,80 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
+    // ---------- OSM regional offline marker library ----------
+    private fun addRegionImportControls(root: LinearLayout) {
+        root.addView(TextView(this).apply {
+            text = "Dữ liệu OSM Việt Nam theo vùng"
+            textSize = 18f
+            setPadding(0, pad, 0, 0)
+        })
+        regionsInfo = TextView(this).apply {
+            text = "Đang đọc danh sách vùng offline…"
+            textSize = 13f
+        }
+        root.addView(regionsInfo)
+        root.addView(Button(this).apply {
+            text = "Nhập vùng OSM GeoJSON (từ file được cấp phép)"
+            setOnClickListener {
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "application/geo+json"
+                    putExtra(Intent.EXTRA_MIME_TYPES,
+                        arrayOf("application/geo+json", "application/json", "text/plain"))
+                }, reqRegionImport)
+            }
+        })
+        root.addView(TextView(this).apply {
+            text = "Mỗi file GeoJSON gồm tối đa 25.000 biển báo Point (tối đa 8 MB), " +
+                "nguồn OpenStreetMap và osm_id. Dữ liệu lưu SQLite trên máy. " +
+                "Không tải dữ liệu thương mại hoặc gửi GPS lên máy chủ."
+            textSize = 12f
+        })
+        refreshRegionInfo()
+    }
+
+    private fun refreshRegionInfo() {
+        val list = runCatching { regionStore.regions() }.getOrElse {
+            regionsInfo.text = "Không đọc được kho OSM; dữ liệu được giữ nguyên."
+            return
+        }
+        regionsInfo.text = if (list.isEmpty()) "Chưa nhập vùng OSM offline."
+        else "Đã lưu: " + list.joinToString(" · ") { "${it.key} (${it.count} biển)" }
+    }
+
+    private fun importRegionFile(uri: Uri) {
+        val input = EditText(this).apply {
+            hint = "Mã vùng: bac_ninh, ha_noi, da_nang…"
+            setText("bac_ninh")
+        }
+        AlertDialog.Builder(this).setTitle("Nhập vùng OSM ngoại tuyến")
+            .setMessage("Nhập file GeoJSON đã chuẩn hóa theo tài liệu. Vùng cùng mã sẽ được thay thế.")
+            .setView(input)
+            .setNegativeButton("Hủy", null)
+            .setPositiveButton("Nhập") { _, _ ->
+                val region = input.text.toString().trim()
+                Thread {
+                    val result = runCatching {
+                        contentResolver.openInputStream(uri)?.use {
+                            regionStore.importRegion(region, it)
+                        } ?: error("Không mở được file vùng.")
+                    }
+                    runOnUiThread {
+                        result.onSuccess { count ->
+                            refreshRegionInfo()
+                            Toast.makeText(this, "Đã nhập $count biển cho vùng $region",
+                                Toast.LENGTH_LONG).show()
+                        }.onFailure {
+                            logErr("MainActivity:regionImport", it)
+                            Toast.makeText(this,
+                                "Nhập vùng thất bại: ${it.message?.take(100)}",
+                                Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }.start()
+            }.show()
+    }
+
     // ---------- báo cáo giao thông Phase 4: lưu cục bộ ----------
     private fun refreshReports() {
         reportBox.removeAllViews()
@@ -1245,6 +1325,10 @@ class MainActivity : Activity() {
             if (resultCode == RESULT_OK) {
                 data?.data?.let { writeReportExport(it) } ?: run { exportWithGps = false }
             } else exportWithGps = false
+            return
+        }
+        if (requestCode == reqRegionImport && resultCode == RESULT_OK) {
+            data?.data?.let { importRegionFile(it) }
             return
         }
         if (requestCode == reqPick && resultCode == RESULT_OK) {
