@@ -67,6 +67,25 @@ class SpeedWayMatcherTest {
             listOf(eastWest(1, -5.0), eastWest(2, 5.0))))
     }
 
+    @Test fun onewayRejectsWrongTravelDirection() {
+        val road = SpeedWayGeometry(7, 0, eastWest(7, 0.0).points, oneway = 1)
+        assertNotNull(SpeedWayMatcher().match(0.0, 0.0, 90.0, true, 3.0, listOf(road)))
+        assertNull(SpeedWayMatcher().match(0.0, 0.0, 270.0, true, 3.0, listOf(road)))
+        val reverse = SpeedWayGeometry(8, 0, road.points, oneway = -1)
+        assertNull(SpeedWayMatcher().match(0.0, 0.0, 90.0, true, 3.0, listOf(reverse)))
+        assertNotNull(SpeedWayMatcher().match(0.0, 0.0, 270.0, true, 3.0, listOf(reverse)))
+    }
+
+    @Test fun switchingWaysNeedsThreeConfidentFixes() {
+        val matcher = SpeedWayMatcher()
+        val first = listOf(eastWest(1, 0.0))
+        val next = listOf(eastWest(2, 0.0))
+        assertEquals(1L, requireNotNull(matcher.match(0.0, 0.0, 90.0, true, 3.0, first)).wayId)
+        assertNull(matcher.match(0.0, 0.0, 90.0, true, 3.0, next))
+        assertNull(matcher.match(0.0, 0.0, 90.0, true, 3.0, next))
+        assertEquals(2L, requireNotNull(matcher.match(0.0, 0.0, 90.0, true, 3.0, next)).wayId)
+    }
+
     @Test fun multipleSegmentsOfOneWayAreNotCompetingRoads() {
         val road = SpeedWayGeometry(99, 0, doubleArrayOf(
             0.0, -10.0 / scale, 0.0, 0.0, 0.0, 10.0 / scale

@@ -34,7 +34,13 @@ internal class SpeedWayMatcher {
         val forward: Boolean, val score: Double
     )
     private var previousWayId: Long? = null
-    fun reset() { previousWayId = null }
+    private var pendingWayId: Long? = null
+    private var pendingCount = 0
+    fun reset() {
+        previousWayId = null
+        pendingWayId = null
+        pendingCount = 0
+    }
 
     fun match(
         lat: Double, lon: Double, heading: Double,
@@ -79,10 +85,15 @@ internal class SpeedWayMatcher {
             val difference = if (hasHeading) angleDifference(bearing, heading) else 0.0
             val axisError = min(difference, 180.0 - difference)
             if (hasHeading && axisError > 45.0) continue
+            // A one-way OSM road cannot be matched against its permitted
+            // direction when the GPS heading is reliable.
+            val forward = !hasHeading || difference <= 90.0
+            if (hasHeading && (road.oneway == 1 && !forward ||
+                               road.oneway == -1 && forward)) continue
             val score = distance + if (hasHeading) axisError * 0.25 else 0.0
             candidates.add(Candidate(
                 roadIndex, road.wayId, road.level, x, y, distance,
-                !hasHeading || difference <= 90.0, score
+                forward, score
             ))
         }
         // Continuity is a minor tie-breaker, never an ambiguity override.
@@ -97,7 +108,19 @@ internal class SpeedWayMatcher {
             val plausibleCompetitor = abs(other.score - best.score) <= 5.0
             if (stacked || plausibleCompetitor) { reset(); return null }
         }
+        // Require three consecutive confident fixes before switching to a
+        // different OSM way. Never return the previous way when its geometry
+        // is no longer a confident candidate: abstain during the transition.
+        if (previousWayId != null && previousWayId != best.id) {
+            if (pendingWayId == best.id) pendingCount++ else {
+                pendingWayId = best.id
+                pendingCount = 1
+            }
+            if (pendingCount < 3) return null
+        }
         previousWayId = best.id
+        pendingWayId = null
+        pendingCount = 0
         return SpeedWayMatch(best.index, best.id, best.forward)
     }
     private fun normalize(a: Double): Double = ((a % 360.0) + 360.0) % 360.0
