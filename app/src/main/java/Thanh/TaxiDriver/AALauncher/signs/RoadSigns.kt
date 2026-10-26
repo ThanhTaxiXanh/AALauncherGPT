@@ -450,7 +450,10 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
         val trafficSign = (t.str("traffic_sign") ?: t.str("traffic_sign:forward") ?: t.str("traffic_sign:backward"))?.lowercase() ?: ""
         return when {
             hw == "speed_camera" || t.str("enforcement") == "maxspeed" ->
-                SignItem(lat, lon, "camera", "CAM", if (ms != null) "Camera tốc độ $ms" else "Camera tốc độ", ms ?: 0)
+                SignItem(lat, lon, "camera", "CAM",
+                    if (ms != null) "Camera tốc độ $ms" else "Camera tốc độ", ms ?: 0)
+            t.str("enforcement") == "traffic_signals" ->
+                SignItem(lat, lon, "redlight_camera", "CAM", "Camera giám sát đèn đỏ", 0)
             hw == "stop" -> SignItem(lat, lon, "stop", "STOP", "Biển dừng", 0)
             hw == "give_way" -> SignItem(lat, lon, "yield", "NH", "Nhường đường", 0)
             hw == "traffic_signals" -> SignItem(lat, lon, "signals", "ĐÈN", "Đèn giao thông", 0)
@@ -475,6 +478,20 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             s.contains("give_way") || s.contains("yield") -> SignItem(lat, lon, "yield", "NH", "Nhường đường", 0)
             s.contains("no_overtaking") || s.contains("no-overtaking") || s.contains("p.125") ->
                 SignItem(lat, lon, "no_overtaking", "CẤM", "Cấm vượt", 0)
+            s.contains("no_entry") || s.contains("no-entry") || s.contains("p.102") ->
+                SignItem(lat, lon, "no_entry", "⛔", "Cấm đi vào", 0)
+            s.contains("no_parking") || s.contains("p.131a") ->
+                SignItem(lat, lon, "no_parking", "P", "Cấm đỗ xe", 0)
+            s.contains("maxheight") || s.contains("max_height") ->
+                SignItem(lat, lon, "height", "H", "Giới hạn chiều cao (xem biển thực tế)", 0)
+            s.contains("children") || s.contains("school") || s.contains("w.225") ->
+                SignItem(lat, lon, "school", "HS", "Chú ý trẻ em/trường học", 0)
+            s.contains("railway_crossing") || s.contains("level_crossing") ->
+                SignItem(lat, lon, "railway", "TÀU", "Đường sắt giao cắt", 0)
+            s.contains("traffic_signals") || s.contains("traffic_lights") ->
+                SignItem(lat, lon, "signals", "ĐÈN", "Đèn giao thông phía trước", 0)
+            s.contains("dangerous_curve") || s.contains("w.201") ->
+                SignItem(lat, lon, "curve", "↷", "Đường cong nguy hiểm", 0)
             else -> SignItem(lat, lon, "other", "!", "Biển báo: " + ts.take(24), 0)
         }
     }

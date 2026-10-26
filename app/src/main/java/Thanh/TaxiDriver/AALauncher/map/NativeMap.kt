@@ -744,7 +744,9 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private fun signColor(type: String): String = when (type) {
         "speed" -> "#d62626"
         "no_overtaking" -> "#e5484d"
-        "camera" -> "#7b1fa2"
+        "camera", "redlight_camera" -> "#7b1fa2"
+        "school", "railway", "curve" -> "#ef8f00"
+        "no_entry", "no_parking", "height" -> "#c62828"
         "stop" -> "#c62828"
         "yield" -> "#ef6c00"
         "signals" -> "#2e7d32"
