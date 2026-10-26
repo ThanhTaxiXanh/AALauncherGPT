@@ -36,9 +36,9 @@ def convert(tags):
     if "dangerous_curve" in ts or "w.201" in ts: return "curve", 0
     speed = tags.get("maxspeed","")
     if not speed:
-        result = re.search(r"(?:maxspeed|p\\.127).*?\\[(\\d{1,3})\\]", ts)
+        result = re.search(r"(?:maxspeed|p\.127).*?\[(\d{1,3})\]", ts)
         speed = result.group(1) if result else ""
-    match = re.fullmatch(r"\\s*(\\d{1,3})(?:\\s*km/h)?\\s*", speed)
+    match = re.fullmatch(r"\s*(\d{1,3})(?:\s*km/h)?\s*", speed)
     if match and 5 <= int(match.group(1)) <= 160:
         return "speed", int(match.group(1))
     if ts: return "other", 0

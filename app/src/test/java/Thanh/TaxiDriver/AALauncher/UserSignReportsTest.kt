@@ -19,7 +19,7 @@ class UserSignReportsTest {
             TrafficReportSeverity.LOW, "Đầu đường", loc, 80)
         assertEquals(80, store.list().single().speedKmh)
         assertEquals(loc, store.list().single().location)
-        assertTrue(store.exportJson().contains("\"speedKmh\": 80"))
+        assertEquals(80, org.json.JSONObject(store.exportJson()).getJSONArray("reports").getJSONObject(0).getInt("speedKmh"))
         assertFalse(store.exportJson().contains("\"lat\""))
     }
 
