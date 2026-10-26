@@ -34,12 +34,8 @@ internal class SpeedWayMatcher {
         val forward: Boolean, val score: Double
     )
     private var previousWayId: Long? = null
-    private var pendingWayId: Long? = null
-    private var pendingCount = 0
     fun reset() {
         previousWayId = null
-        pendingWayId = null
-        pendingCount = 0
     }
 
     fun match(
@@ -108,19 +104,7 @@ internal class SpeedWayMatcher {
             val plausibleCompetitor = abs(other.score - best.score) <= 5.0
             if (stacked || plausibleCompetitor) { reset(); return null }
         }
-        // Require three consecutive confident fixes before switching to a
-        // different OSM way. Never return the previous way when its geometry
-        // is no longer a confident candidate: abstain during the transition.
-        if (previousWayId != null && previousWayId != best.id) {
-            if (pendingWayId == best.id) pendingCount++ else {
-                pendingWayId = best.id
-                pendingCount = 1
-            }
-            if (pendingCount < 3) return null
-        }
         previousWayId = best.id
-        pendingWayId = null
-        pendingCount = 0
         return SpeedWayMatch(best.index, best.id, best.forward)
     }
     private fun normalize(a: Double): Double = ((a % 360.0) + 360.0) % 360.0

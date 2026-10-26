@@ -19,9 +19,11 @@ import kotlin.math.min
  */
 internal class OfflineSpeedLimitResolver {
     private val matcher = SpeedWayMatcher()
+    private val transitionGate = OfflineWayTransitionGate()
 
     fun reset() {
         matcher.reset()
+        transitionGate.reset()
     }
 
     fun state(
@@ -40,7 +42,7 @@ internal class OfflineSpeedLimitResolver {
             lat !in -90.0..90.0 || lon !in -180.0..180.0 ||
             !accuracyM.isFinite() || accuracyM < 0.0 || accuracyM > 12.0 ||
             nowElapsedMs - gpsFixMs !in 0L..4_000L || roads.isEmpty()) {
-            matcher.reset()
+            reset()
             return unknown("OSM offline chưa có ngữ cảnh đường đủ tin cậy")
         }
 
@@ -58,13 +60,17 @@ internal class OfflineSpeedLimitResolver {
             min(5.0, max(3.0, accuracyM * 0.55))
         }
         if (!exactDistance.isFinite() || exactDistance > strictDistance) {
-            matcher.reset()
+            reset()
             return unknown("OSM offline: vị trí chưa đủ chắc chắn")
         }
 
         if (streetName.isNotBlank() && road.name.isNotBlank() && !nameMatches) {
-            matcher.reset()
+            reset()
             return unknown("OSM offline: tên đường không khớp")
+        }
+
+        if (!transitionGate.accept(match.wayId)) {
+            return unknown("OSM offline: đang xác nhận chuyển đoạn đường")
         }
 
         // The selected road may intentionally have no speed tag. Never borrow
