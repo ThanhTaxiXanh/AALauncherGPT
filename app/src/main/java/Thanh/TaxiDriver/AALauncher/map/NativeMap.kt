@@ -111,6 +111,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
     private val reportsSrc = "ct-personal-reports"
     private val osmRegionsSrc = "ct-regional-osm-signs"
     private val regionDb = Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore(appCtx)
+    private val nationalBundle = Thanh.TaxiDriver.AALauncher.signs.BundledVietnamOsm(appCtx)
     private var regionMarkers: List<Thanh.TaxiDriver.AALauncher.signs.RegionalOsmStore.Marker> =
         emptyList()
     private var regionKey = Int.MIN_VALUE
@@ -302,6 +303,7 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
         onFrame = null
         reportWorker.shutdownNow()
         regionDb.close()
+        nationalBundle.close()
         signs.close()
     }
 
@@ -817,7 +819,8 @@ class NativeMap(private val appCtx: Context, private val main: Handler) {
                 emptyList()
             } else emptyList()
             val regional = if (hasFix) try {
-                regionDb.nearby(tLat, tLon)
+                (regionDb.nearby(tLat, tLon) +
+                    nationalBundle.nearby(tLat, tLon)).distinctBy { it.osmId }.take(160)
             } catch (e: Exception) {
                 logErr("NativeMap:regionalOsm", e)
                 emptyList()

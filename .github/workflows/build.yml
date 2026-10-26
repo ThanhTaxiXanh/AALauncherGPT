@@ -87,6 +87,74 @@ jobs:
           done
 
 
+  bundled_vietnam_osm:
+    name: Build offline Vietnam OSM APK
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Install pyosmium
+        run: python3 -m pip install --user --disable-pip-version-check osmium
+      - name: Download complete Geofabrik Vietnam PBF
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/osm"
+          curl --fail --location --retry 4 --retry-delay 15 --connect-timeout 30 \
+            --max-time 1800 --show-error \
+            https://download.geofabrik.de/asia/vietnam-latest.osm.pbf \
+            -o "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf"
+          test "$(stat -c '%s' "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf")" -gt 100000000
+          sha256sum "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf" > "$RUNNER_TEMP/osm/source.sha256"
+      - name: Extract real OSM signs, cameras and road speeds to bundled SQLite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/osm/extract" app/src/debug/assets/osm
+          python3 scripts/build_vietnam_osm_bundle.py \
+            "$RUNNER_TEMP/osm/vietnam-latest.osm.pbf" \
+            --output "$RUNNER_TEMP/osm/extract/vietnam_signs.sqlite" \
+            --stats "$RUNNER_TEMP/osm/extract/osm_stats.json"
+          sha256sum "$RUNNER_TEMP/osm/extract/vietnam_signs.sqlite" | cut -d' ' -f1 \
+            > app/src/debug/assets/osm/vietnam_signs.sha256
+          gzip -n -9 -c "$RUNNER_TEMP/osm/extract/vietnam_signs.sqlite" \
+            > app/src/debug/assets/osm/vietnam_signs.sqlite.gz
+          cp "$RUNNER_TEMP/osm/extract/osm_stats.json" app/src/debug/assets/osm/vietnam_stats.json
+          python3 - <<'PY'
+          import json,pathlib
+          root=pathlib.Path('app/src/debug/assets/osm')
+          x=json.loads((root/'vietnam_stats.json').read_text())
+          assert x['sign_nodes']>0 and x['road_speed_ways']>0
+          assert (root/'vietnam_signs.sqlite.gz').stat().st_size < 120_000_000
+          print('OSM source counts:',x)
+          PY
+      - name: Build debug APK containing national OSM dataset
+        run: gradle :app:assembleDebug --no-daemon --console=plain
+      - name: Verify nationwide SQLite assets inside APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/osm/vietnam_signs.sqlite.gz'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'assets/osm/vietnam_signs.sha256'
+      - name: Upload debug APK with nationwide Vietnam OSM and statistics
+        uses: actions/upload-artifact@v4
+        with:
+          name: AA-Taxi-Driver-Vietnam-OSM-offline-debug
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/src/debug/assets/osm/vietnam_stats.json
+          if-no-files-found: error
+          retention-days: 14
+
   inspect_signing:
     if: github.event_name == 'workflow_dispatch' && inputs.inspect_signing == true && github.ref == 'refs/heads/main'
     needs: verify
