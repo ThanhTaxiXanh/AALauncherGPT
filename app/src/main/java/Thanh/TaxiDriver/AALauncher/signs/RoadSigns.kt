@@ -251,6 +251,7 @@ class RoadSigns(private val cacheFile: File, supplementalGeoJson: String = "") {
             "way$a[\"highway\"~\"^($HIGHWAYS)\$\"];" +
             "node$a[\"highway\"~\"^(stop|give_way|traffic_signals|speed_camera)\$\"];" +
             "node$a[\"enforcement\"=\"maxspeed\"];" +
+            "node$a[\"enforcement\"=\"traffic_signals\"];" +
             "node$a[\"traffic_calming\"];" +
             "node$a[\"traffic_sign\"];" +
             "node$a[\"traffic_sign:forward\"];" +
